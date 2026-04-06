@@ -1,0 +1,303 @@
+---
+title: 'Error codes'
+description: 'Complete reference for srtp_err_status_t — the enumeration returned by all libSRTP functions.'
+keywords: ['srtp_err_status_t', 'error codes', 'return values', 'libsrtp errors']
+---
+
+Every public libSRTP function returns an `srtp_err_status_t` value. The value `srtp_err_status_ok` (0) indicates success; any other value indicates a problem. Because success is zero, you can write idiomatic C error checks with a direct boolean test.
+
+```c
+srtp_err_status_t status = srtp_protect(ctx, rtp, rtp_len, srtp, &srtp_len, 0);
+if (status != srtp_err_status_ok) {
+    /* handle error */
+}
+```
+
+<Note>
+The numeric values in this enumeration are stable across releases. You can safely store them in log files or compare them by integer value.
+</Note>
+
+---
+
+## Handling error codes
+
+The example below shows a complete, production-style error-handling pattern:
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+
+const char *srtp_err_to_string(srtp_err_status_t status) {
+    switch (status) {
+        case srtp_err_status_ok:            return "ok";
+        case srtp_err_status_fail:          return "fail";
+        case srtp_err_status_bad_param:     return "bad_param";
+        case srtp_err_status_alloc_fail:    return "alloc_fail";
+        case srtp_err_status_dealloc_fail:  return "dealloc_fail";
+        case srtp_err_status_init_fail:     return "init_fail";
+        case srtp_err_status_terminus:      return "terminus";
+        case srtp_err_status_auth_fail:     return "auth_fail";
+        case srtp_err_status_cipher_fail:   return "cipher_fail";
+        case srtp_err_status_replay_fail:   return "replay_fail";
+        case srtp_err_status_replay_old:    return "replay_old";
+        case srtp_err_status_algo_fail:     return "algo_fail";
+        case srtp_err_status_no_such_op:    return "no_such_op";
+        case srtp_err_status_no_ctx:        return "no_ctx";
+        case srtp_err_status_cant_check:    return "cant_check";
+        case srtp_err_status_key_expired:   return "key_expired";
+        case srtp_err_status_socket_err:    return "socket_err";
+        case srtp_err_status_signal_err:    return "signal_err";
+        case srtp_err_status_nonce_bad:     return "nonce_bad";
+        case srtp_err_status_read_fail:     return "read_fail";
+        case srtp_err_status_write_fail:    return "write_fail";
+        case srtp_err_status_parse_err:     return "parse_err";
+        case srtp_err_status_encode_err:    return "encode_err";
+        case srtp_err_status_semaphore_err: return "semaphore_err";
+        case srtp_err_status_pfkey_err:     return "pfkey_err";
+        case srtp_err_status_bad_mki:       return "bad_mki";
+        case srtp_err_status_pkt_idx_old:   return "pkt_idx_old";
+        case srtp_err_status_pkt_idx_adv:   return "pkt_idx_adv";
+        case srtp_err_status_buffer_small:  return "buffer_small";
+        case srtp_err_status_cryptex_err:   return "cryptex_err";
+        default:                            return "unknown";
+    }
+}
+
+void handle_srtp_result(srtp_err_status_t status, const char *operation) {
+    if (status == srtp_err_status_ok) {
+        return;
+    }
+
+    fprintf(stderr, "[libsrtp] %s failed: %s (%d)\n",
+            operation, srtp_err_to_string(status), (int)status);
+
+    switch (status) {
+        case srtp_err_status_auth_fail:
+            /* Discard the packet — likely tampering or corruption. */
+            break;
+        case srtp_err_status_replay_fail:
+        case srtp_err_status_replay_old:
+            /* Silently drop replayed packets. */
+            break;
+        case srtp_err_status_key_expired:
+            /* Trigger re-keying via DTLS or signaling. */
+            break;
+        case srtp_err_status_buffer_small:
+            /* Re-allocate the output buffer and retry. */
+            break;
+        default:
+            /* Log and propagate unexpected errors. */
+            break;
+    }
+}
+```
+
+---
+
+## Error code groups
+
+<AccordionGroup>
+
+  <Accordion title="Success (0)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_ok` | 0 | Operation completed successfully. |
+
+**Meaning:** The function completed without errors. All output parameters contain valid data.
+
+**When returned:** By every API function on the normal path.
+
+**Handling:** No action required. Proceed with the result.
+
+  </Accordion>
+
+  <Accordion title="General and parameter errors (1–5)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_fail` | 1 | Unspecified internal failure. |
+| `srtp_err_status_bad_param` | 2 | Unsupported or invalid parameter. |
+| `srtp_err_status_alloc_fail` | 3 | Memory allocation failed. |
+| `srtp_err_status_dealloc_fail` | 4 | Memory deallocation failed. |
+| `srtp_err_status_init_fail` | 5 | Initialization of a subsystem failed. |
+
+**`srtp_err_status_fail` (1)**
+A catch-all for internal failures that do not fit a more specific category. When you encounter this code, enable debug logging (`srtp_set_debug_module`) to get more context.
+
+**`srtp_err_status_bad_param` (2)**
+A caller-supplied argument is NULL, out of range, or refers to an unsupported algorithm or profile. This is always a programming error — check function preconditions. Also returned by `srtp_crypto_policy_set_from_profile_for_rtp()` when an unrecognized `srtp_profile_t` value is passed.
+
+**`srtp_err_status_alloc_fail` (3)**
+The library called `malloc` (or equivalent) and it returned NULL. Returned by `srtp_create()` and `srtp_stream_add()` when the system is out of memory.
+
+**`srtp_err_status_dealloc_fail` (4)**
+A `free` or equivalent operation could not be completed. In practice this is rare; it typically indicates heap corruption.
+
+**`srtp_err_status_init_fail` (5)**
+A required subsystem — the crypto kernel, a cipher, or an authentication function — could not be initialized. Returned by `srtp_init()`, `srtp_create()`, and `srtp_stream_add()` when the underlying cryptographic backend fails to start.
+
+  </Accordion>
+
+  <Accordion title="Capacity and operational errors (6, 12–14)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_terminus` | 6 | Cannot process as much data as requested. |
+| `srtp_err_status_no_such_op` | 12 | The requested operation is not supported. |
+| `srtp_err_status_no_ctx` | 13 | No matching stream context was found. |
+| `srtp_err_status_cant_check` | 14 | Unable to perform the requested validation. |
+
+**`srtp_err_status_terminus` (6)**
+A stream has exhausted the data it can protect within its current key lifetime. The library cannot process any further packets on this stream. Trigger a re-key event.
+
+**`srtp_err_status_no_such_op` (12)**
+An operation (such as a cipher or authentication function) was requested that is not implemented or was not compiled into the library.
+
+**`srtp_err_status_no_ctx` (13)**
+`srtp_unprotect()` or `srtp_unprotect_rtcp()` received a packet whose SSRC does not match any stream in the session and no wildcard policy is active. Add a policy for the SSRC or use `ssrc_any_inbound`.
+
+**`srtp_err_status_cant_check` (14)**
+The library cannot validate the packet because insufficient information is available — for example, when authentication is disabled and integrity cannot be verified.
+
+  </Accordion>
+
+  <Accordion title="Cryptographic errors (7–8, 11)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_auth_fail` | 7 | Authentication tag verification failed. |
+| `srtp_err_status_cipher_fail` | 8 | An encryption or decryption operation failed. |
+| `srtp_err_status_algo_fail` | 11 | A cryptographic algorithm self-test failed. |
+
+**`srtp_err_status_auth_fail` (7)**
+The HMAC-SHA1 or GCM authentication tag on an inbound packet did not match. This means either the packet was tampered with, corrupted in transit, or decrypted with the wrong key. **Always discard the packet.** Returned by `srtp_unprotect()` and `srtp_unprotect_rtcp()`.
+
+**`srtp_err_status_cipher_fail` (8)**
+The underlying cipher (AES-ICM or AES-GCM) returned an error from the crypto backend (OpenSSL, WolfSSL, Mbedtls, NSS). This is usually a sign of a misconfigured or failing crypto library.
+
+**`srtp_err_status_algo_fail` (11)**
+A built-in algorithm self-test (run during `srtp_init()`) did not produce the expected output. This typically means the compiled binary is broken or the hardware does not support the required instructions.
+
+  </Accordion>
+
+  <Accordion title="Replay protection errors (9–10, 26–27)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_replay_fail` | 9 | Replay check failed — packet index already seen. |
+| `srtp_err_status_replay_old` | 10 | Replay check failed — packet index is outside the replay window. |
+| `srtp_err_status_pkt_idx_old` | 26 | Packet index is too old to consider. |
+| `srtp_err_status_pkt_idx_adv` | 27 | Packet index is too far ahead; a stream reset is needed. |
+
+**`srtp_err_status_replay_fail` (9)**
+The packet's sequence number has already been received and accepted. The packet is a replay attack or a retransmission. **Discard the packet silently.** Unless `allow_repeat_tx` is set in the policy, retransmitted packets also trigger this.
+
+**`srtp_err_status_replay_old` (10)**
+The packet's index falls before the start of the replay protection window. The window is at most 2^15 packets wide. Out-of-order delivery beyond this limit produces this error. **Discard the packet.**
+
+**`srtp_err_status_pkt_idx_old` (26)**
+The packet index is too far in the past to be considered valid. Similar to `replay_old` but specific to the extended SRTP index tracking (RDBX). Discard the packet.
+
+**`srtp_err_status_pkt_idx_adv` (27)**
+The packet index is so far ahead of the current state that the library cannot update its index without risking a security gap. A stream reset via `srtp_stream_update()` or `srtp_update()` may be required.
+
+  </Accordion>
+
+  <Accordion title="Key management errors (15, 25)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_key_expired` | 15 | The master key has reached its usage limit. |
+| `srtp_err_status_bad_mki` | 25 | The MKI value in the packet is not recognized. |
+
+**`srtp_err_status_key_expired` (15)**
+The stream's key has reached the hard limit for the number of packets it can protect (2^48). No more packets can be processed on this stream. You must re-key: use `srtp_stream_update()` with a new key or tear down and recreate the session. This condition is also signaled ahead of time via the event callback as `event_key_soft_limit` and `event_key_hard_limit`.
+
+**`srtp_err_status_bad_mki` (25)**
+The MKI (Master Key Identifier) field in the inbound packet does not match any of the master keys registered in the session policy. Returned by `srtp_unprotect()` and `srtp_unprotect_rtcp()` when `use_mki` is enabled. Ensure the sender and receiver have the same MKI-to-key mapping.
+
+  </Accordion>
+
+  <Accordion title="Resource and I/O errors (16–24)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_socket_err` | 16 | Error in socket operations. |
+| `srtp_err_status_signal_err` | 17 | Error in POSIX signal handling. |
+| `srtp_err_status_nonce_bad` | 18 | Nonce check failed. |
+| `srtp_err_status_read_fail` | 19 | Could not read data. |
+| `srtp_err_status_write_fail` | 20 | Could not write data. |
+| `srtp_err_status_parse_err` | 21 | Error parsing data. |
+| `srtp_err_status_encode_err` | 22 | Error encoding data. |
+| `srtp_err_status_semaphore_err` | 23 | Error using semaphores. |
+| `srtp_err_status_pfkey_err` | 24 | Error using PF_KEY socket interface. |
+
+These codes are reserved for internal infrastructure. They are unlikely to surface in typical use of the public API. If you encounter them, check the operating system's error state (`errno`) and the libSRTP debug log output.
+
+  </Accordion>
+
+  <Accordion title="Buffer and encoding errors (28–29)">
+
+| Value | Integer | Description |
+|-------|---------|-------------|
+| `srtp_err_status_buffer_small` | 28 | Output buffer is too small for the result. |
+| `srtp_err_status_cryptex_err` | 29 | Unsupported Cryptex (RFC 9335) operation. |
+
+**`srtp_err_status_buffer_small` (28)**
+The output buffer passed to `srtp_protect()` or `srtp_protect_rtcp()` is smaller than the resulting SRTP/SRTCP packet. Allocate a buffer at least `input_len + SRTP_MAX_TRAILER_LEN` bytes for RTP, or `input_len + SRTP_MAX_SRTCP_TRAILER_LEN` bytes for RTCP. Use `srtp_get_protect_trailer_length()` to query the exact overhead for a given session.
+
+```c
+size_t trailer_len = 0;
+srtp_get_protect_trailer_length(session, 0, &trailer_len);
+
+size_t srtp_buf_len = rtp_len + trailer_len;
+uint8_t *srtp_buf = malloc(srtp_buf_len);
+
+srtp_err_status_t status = srtp_protect(session, rtp, rtp_len,
+                                         srtp_buf, &srtp_buf_len, 0);
+```
+
+**`srtp_err_status_cryptex_err` (29)**
+An operation was attempted using Cryptex (RFC 9335 header and CSRC encryption) that the library does not support, or the policy configuration for Cryptex is invalid. Check that `use_cryptex` is set correctly in `srtp_policy_t` and that your crypto backend supports the required operations.
+
+  </Accordion>
+
+</AccordionGroup>
+
+---
+
+## Quick reference table
+
+| Constant | Value | Summary |
+|----------|-------|---------|
+| `srtp_err_status_ok` | 0 | Success |
+| `srtp_err_status_fail` | 1 | Unspecified failure |
+| `srtp_err_status_bad_param` | 2 | Invalid parameter |
+| `srtp_err_status_alloc_fail` | 3 | Memory allocation failed |
+| `srtp_err_status_dealloc_fail` | 4 | Memory deallocation failed |
+| `srtp_err_status_init_fail` | 5 | Initialization failed |
+| `srtp_err_status_terminus` | 6 | Stream data limit reached |
+| `srtp_err_status_auth_fail` | 7 | Authentication tag mismatch |
+| `srtp_err_status_cipher_fail` | 8 | Cipher operation failed |
+| `srtp_err_status_replay_fail` | 9 | Packet already received |
+| `srtp_err_status_replay_old` | 10 | Packet outside replay window |
+| `srtp_err_status_algo_fail` | 11 | Algorithm self-test failed |
+| `srtp_err_status_no_such_op` | 12 | Operation not supported |
+| `srtp_err_status_no_ctx` | 13 | No stream context found |
+| `srtp_err_status_cant_check` | 14 | Cannot validate packet |
+| `srtp_err_status_key_expired` | 15 | Key usage limit reached |
+| `srtp_err_status_socket_err` | 16 | Socket error |
+| `srtp_err_status_signal_err` | 17 | Signal error |
+| `srtp_err_status_nonce_bad` | 18 | Nonce check failed |
+| `srtp_err_status_read_fail` | 19 | Read failed |
+| `srtp_err_status_write_fail` | 20 | Write failed |
+| `srtp_err_status_parse_err` | 21 | Parse error |
+| `srtp_err_status_encode_err` | 22 | Encode error |
+| `srtp_err_status_semaphore_err` | 23 | Semaphore error |
+| `srtp_err_status_pfkey_err` | 24 | PF_KEY error |
+| `srtp_err_status_bad_mki` | 25 | Unknown MKI in packet |
+| `srtp_err_status_pkt_idx_old` | 26 | Packet index too old |
+| `srtp_err_status_pkt_idx_adv` | 27 | Packet index too advanced |
+| `srtp_err_status_buffer_small` | 28 | Output buffer too small |
+| `srtp_err_status_cryptex_err` | 29 | Unsupported Cryptex operation |

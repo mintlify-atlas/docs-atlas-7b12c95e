@@ -1,0 +1,260 @@
+---
+title: 'Session deallocation'
+description: 'Deallocate SRTP sessions and manage per-session user data with srtp_dealloc(), srtp_set_user_data(), and srtp_get_user_data().'
+keywords: ['srtp_dealloc', 'srtp_set_user_data', 'srtp_get_user_data', 'dealloc', 'cleanup', 'user data']
+---
+
+Functions for releasing SRTP session resources and associating application state with a session handle.
+
+---
+
+## srtp_dealloc
+
+```c
+srtp_err_status_t srtp_dealloc(srtp_t s);
+```
+
+Deallocates all storage for an SRTP session context, including every SRTP stream contained within it. After this call returns, the session handle `s` is invalid and must not be used again.
+
+<ParamField path="s" type="srtp_t" required>
+  The session to deallocate. Must be a valid handle previously returned by `srtp_create()`.
+</ParamField>
+
+<Warning>
+  Call `srtp_dealloc()` exactly once per session created with `srtp_create()`. Calling it a second time on the same handle results in undefined behavior.
+</Warning>
+
+<Warning>
+  Deallocate all sessions **before** calling `srtp_shutdown()`. Calling `srtp_shutdown()` with active sessions results in undefined behavior.
+</Warning>
+
+<Note>
+  `srtp_dealloc()` frees all SRTP streams within the session. You do not need to call `srtp_stream_remove()` for individual streams before deallocating the session.
+</Note>
+
+### Returns
+
+<ResponseField name="srtp_err_status_ok" type="srtp_err_status_t">
+  The session and all its streams were deallocated successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_dealloc_fail" type="srtp_err_status_t">
+  One or more internal resources could not be released. This is uncommon and typically indicates a platform-level memory management issue.
+</ResponseField>
+
+### Example
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+
+void teardown_session(srtp_t session) {
+    srtp_err_status_t status = srtp_dealloc(session);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_dealloc() failed: %d\n", status);
+    }
+    /* session handle is now invalid — do not use it again */
+}
+```
+
+---
+
+## srtp_set_user_data
+
+```c
+void srtp_set_user_data(srtp_t ctx, void *data);
+```
+
+Associates an arbitrary application pointer with a session. The library stores the pointer without inspecting or managing its lifetime. Retrieve it later with `srtp_get_user_data()`.
+
+<ParamField path="ctx" type="srtp_t" required>
+  The session with which to associate the user data pointer.
+</ParamField>
+
+<ParamField path="data" type="void *">
+  Pointer to application-defined data. Pass `NULL` to clear a previously set pointer. The library does not copy, dereference, or free this pointer.
+</ParamField>
+
+---
+
+## srtp_get_user_data
+
+```c
+void *srtp_get_user_data(srtp_t ctx);
+```
+
+Retrieves the application pointer previously stored with `srtp_set_user_data()`. If no pointer has been set, returns `NULL`.
+
+The primary use case is inside event callbacks, where the session handle (`srtp_event_data_t.session`) is available but application context is not passed directly. Storing a pointer with `srtp_set_user_data()` lets the callback recover that context without global variables.
+
+<ParamField path="ctx" type="srtp_t" required>
+  The session from which to retrieve the user data pointer.
+</ParamField>
+
+### Returns
+
+<ResponseField name="data" type="void *">
+  The pointer previously set with `srtp_set_user_data()`, or `NULL` if none was set.
+</ResponseField>
+
+### Example: attaching connection context to a session
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Application-defined connection context */
+typedef struct {
+    char   remote_addr[64];
+    int    socket_fd;
+} connection_t;
+
+/* Event callback that uses the user data pointer */
+static void event_handler(srtp_event_data_t *data) {
+    connection_t *conn = (connection_t *)srtp_get_user_data(data->session);
+
+    switch (data->event) {
+    case event_key_soft_limit:
+        fprintf(stderr, "[%s] SRTP key nearing expiry for SSRC 0x%08x\n",
+                conn ? conn->remote_addr : "unknown", data->ssrc);
+        break;
+    case event_key_hard_limit:
+        fprintf(stderr, "[%s] SRTP key expired for SSRC 0x%08x — rekeying required\n",
+                conn ? conn->remote_addr : "unknown", data->ssrc);
+        break;
+    default:
+        break;
+    }
+}
+
+srtp_t create_session_with_context(const uint8_t *key,
+                                   const char *remote_addr,
+                                   int socket_fd) {
+    srtp_policy_t policy;
+    srtp_t session;
+    connection_t *conn;
+    srtp_err_status_t status;
+
+    /* Install the event handler (once, globally) */
+    srtp_install_event_handler(event_handler);
+
+    /* Build policy */
+    memset(&policy, 0, sizeof(policy));
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type = ssrc_any_outbound;
+    policy.key       = (uint8_t *)key;
+    policy.next      = NULL;
+
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        return NULL;
+    }
+
+    /* Attach application context */
+    conn = malloc(sizeof(connection_t));
+    if (conn) {
+        strncpy(conn->remote_addr, remote_addr, sizeof(conn->remote_addr) - 1);
+        conn->socket_fd = socket_fd;
+        srtp_set_user_data(session, conn);
+    }
+
+    return session;
+}
+
+void destroy_session_with_context(srtp_t session) {
+    /* Retrieve and free the application context before deallocating */
+    connection_t *conn = (connection_t *)srtp_get_user_data(session);
+    free(conn);
+
+    srtp_dealloc(session);
+}
+```
+
+<Tip>
+  Always free the user data pointer before calling `srtp_dealloc()`. The library does not free it for you.
+</Tip>
+
+---
+
+## Complete lifecycle example
+
+The following example demonstrates the full libSRTP session lifecycle: initialization, session creation with user data, packet protection, deallocation, and library shutdown.
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* 30-byte master key+salt (AES-128-CM / HMAC-SHA1-80) */
+static uint8_t master_key[SRTP_MASTER_KEY_LEN] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d
+};
+
+typedef struct {
+    char name[32];
+} app_ctx_t;
+
+int main(void) {
+    srtp_err_status_t  status;
+    srtp_t             session;
+    srtp_policy_t      policy;
+    app_ctx_t         *ctx;
+
+    /* ── Step 1: initialize the library ──────────────────────────── */
+    status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_init failed: %d\n", status);
+        return EXIT_FAILURE;
+    }
+
+    /* ── Step 2: create a session ────────────────────────────────── */
+    memset(&policy, 0, sizeof(policy));
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type = ssrc_any_outbound;
+    policy.key       = master_key;
+    policy.next      = NULL;
+
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_create failed: %d\n", status);
+        srtp_shutdown();
+        return EXIT_FAILURE;
+    }
+
+    /* ── Step 3: attach application context ──────────────────────── */
+    ctx = malloc(sizeof(app_ctx_t));
+    if (ctx) {
+        strncpy(ctx->name, "outbound-session", sizeof(ctx->name) - 1);
+        srtp_set_user_data(session, ctx);
+    }
+
+    /* ── Step 4: protect packets (abbreviated) ───────────────────── */
+    /* srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 0); */
+
+    /* ── Step 5: free user data and deallocate the session ───────── */
+    ctx = (app_ctx_t *)srtp_get_user_data(session);
+    free(ctx);
+
+    status = srtp_dealloc(session);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_dealloc failed: %d\n", status);
+    }
+
+    /* ── Step 6: shut down the library ───────────────────────────── */
+    status = srtp_shutdown();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_shutdown failed: %d\n", status);
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+```

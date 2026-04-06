@@ -1,0 +1,176 @@
+---
+title: 'Stream management'
+description: 'Add, remove, and update individual SRTP streams within an existing session.'
+keywords: ['srtp', 'stream', 'ssrc', 'session', 'add', 'remove', 'update', 'key rotation']
+---
+
+Stream management functions let you modify the set of streams in a live SRTP session without tearing down and recreating the entire session. This is essential for conferencing applications where participants join and leave dynamically, or for rekeying individual streams without disrupting others.
+
+## srtp_stream_add()
+
+```c
+srtp_err_status_t srtp_stream_add(srtp_t session, const srtp_policy_t *policy);
+```
+
+Allocates and initializes a new SRTP stream within an existing session, applying the crypto policy and key material supplied in `policy`.
+
+Use this function when a new sender joins a session that was created with `srtp_create()`. You can also create a session with a `NULL` policy and add all streams individually using this function.
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session to which the stream will be added.
+</ParamField>
+
+<ParamField path="policy" type="const srtp_policy_t *" required>
+  Pointer to the policy for the new stream. The `policy->ssrc` field must identify a specific SSRC (`ssrc_specific`) or a wildcard (`ssrc_any_inbound` / `ssrc_any_outbound`). The `next` field must be `NULL`; this function adds a single stream.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  Stream was created and added to the session successfully.
+</ResponseField>
+<ResponseField name="srtp_err_status_alloc_fail" type="3">
+  Memory allocation for the new stream failed.
+</ResponseField>
+<ResponseField name="srtp_err_status_init_fail" type="5">
+  Stream initialization failed (e.g., key derivation error).
+</ResponseField>
+
+### Example: adding an inbound stream when a sender joins
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+/* Called when a new RTP sender is detected in the session. */
+srtp_err_status_t on_sender_joined(srtp_t session,
+                                   uint32_t new_ssrc,
+                                   const uint8_t *master_key)
+{
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof(policy));
+
+    /* Target the specific SSRC of the new sender. */
+    policy.ssrc.type  = ssrc_specific;
+    policy.ssrc.value = new_ssrc;  /* host byte order */
+
+    /* Apply the SRTP default cipher suite: AES-128-CM / HMAC-SHA1-80. */
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+    policy.key  = (uint8_t *)master_key;
+    policy.next = NULL;
+
+    return srtp_stream_add(session, &policy);
+}
+```
+
+---
+
+## srtp_stream_remove()
+
+```c
+srtp_err_status_t srtp_stream_remove(srtp_t session, uint32_t ssrc);
+```
+
+Deallocates the stream identified by `ssrc` and removes it from the session. After this call, packets with that SSRC will no longer be processed.
+
+<Warning>
+  **Breaking change in v3.0.0** — The `ssrc` parameter is in **host byte order** in libSRTP 3.0.0 and later. In versions earlier than 3.0.0 it was in network byte order. If you are migrating from an older version, remove any `htonl()` call wrapping the SSRC you pass to this function.
+</Warning>
+
+<Warning>
+  Wildcard SSRCs (`ssrc_any_inbound`, `ssrc_any_outbound`) cannot be removed using this function.
+</Warning>
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session from which the stream will be removed.
+</ParamField>
+
+<ParamField path="ssrc" type="uint32_t" required>
+  The SSRC value of the stream to remove, in **host byte order**.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  Stream was successfully deallocated and removed.
+</ResponseField>
+<ResponseField name="[other]" type="non-zero">
+  Deallocation failed or the stream was not found.
+</ResponseField>
+
+### Example: removing a stream when a sender leaves
+
+```c
+/* Called when an RTP sender signals it is leaving the session. */
+srtp_err_status_t on_sender_left(srtp_t session, uint32_t departed_ssrc)
+{
+    /* ssrc is already in host byte order — do NOT call htonl(). */
+    srtp_err_status_t status = srtp_stream_remove(session, departed_ssrc);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "failed to remove stream 0x%08x: %d\n",
+                departed_ssrc, status);
+    }
+    return status;
+}
+```
+
+---
+
+## srtp_stream_update()
+
+```c
+srtp_err_status_t srtp_stream_update(srtp_t session, const srtp_policy_t *policy);
+```
+
+Updates the stream(s) in `session` whose SSRC matches `policy->ssrc`, replacing their key material and crypto policy. The existing Roll-Over Counter (ROC) value is preserved so that sequence-number continuity is maintained across the key change.
+
+Use this function for per-stream key rotation: supply the new master key in `policy->key` while keeping all other policy fields the same as the original stream configuration.
+
+To update **all** streams in a session at once, use [`srtp_update()`](#) instead.
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session containing the stream(s) to update.
+</ParamField>
+
+<ParamField path="policy" type="const srtp_policy_t *" required>
+  Pointer to the updated policy. The SSRC in `policy->ssrc` selects which stream(s) to update. The new master key must be placed in `policy->key`.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  Stream(s) were updated successfully.
+</ResponseField>
+<ResponseField name="srtp_err_status_alloc_fail" type="3">
+  Memory allocation during the update failed.
+</ResponseField>
+<ResponseField name="srtp_err_status_init_fail" type="5">
+  Re-initialization of the stream failed.
+</ResponseField>
+<ResponseField name="[other]" type="non-zero">
+  Another error occurred during the update.
+</ResponseField>
+
+### Example: rotating the key for a specific stream
+
+```c
+srtp_err_status_t rotate_stream_key(srtp_t session,
+                                    uint32_t target_ssrc,
+                                    const uint8_t *new_master_key)
+{
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof(policy));
+
+    policy.ssrc.type  = ssrc_specific;
+    policy.ssrc.value = target_ssrc;
+
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+    /* Provide the new key; the ROC is preserved automatically. */
+    policy.key  = (uint8_t *)new_master_key;
+    policy.next = NULL;
+
+    return srtp_stream_update(session, &policy);
+}
+```
+
+<Note>
+  `srtp_stream_update()` preserves the ROC so that the remote receiver does not need to reset its sequence-number state. If you need to also reset the ROC after a key update, call `srtp_stream_set_roc()` explicitly after the update succeeds.
+</Note>

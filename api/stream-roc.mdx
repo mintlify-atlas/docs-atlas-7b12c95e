@@ -1,0 +1,154 @@
+---
+title: 'Roll-over counter (ROC)'
+description: 'Get and set the SRTP roll-over counter for a stream to synchronize packet-index state.'
+keywords: ['srtp', 'roc', 'roll-over counter', 'sequence number', 'packet index', 'session resumption']
+---
+
+The Roll-Over Counter (ROC) lets you inspect and override the packet-index state of a specific SRTP stream. Under normal operation libSRTP manages the ROC automatically; manual control is required when you need to synchronise state with a remote peer, for example after a reconnection or when restoring a previously saved session.
+
+## What is the ROC?
+
+RTP sequence numbers are only 16 bits wide, so they wrap around (roll over) after 65,535 packets. SRTP tracks each wrap-around by incrementing a 32-bit Roll-Over Counter. Together the ROC and the 16-bit sequence number form the 48-bit **packet index** that SRTP uses for replay protection and cipher IV construction:
+
+```
+packet_index = (ROC << 16) | rtp_sequence_number
+```
+
+| Value | Width | Range |
+|---|---|---|
+| RTP sequence number | 16 bits | 0 – 65,535 |
+| ROC | 32 bits | 0 – 4,294,967,295 |
+| Packet index | 48 bits | 0 – 281,474,976,710,655 |
+
+Both endpoints must agree on the current ROC. libSRTP updates the ROC automatically on every `srtp_protect()` / `srtp_unprotect()` call. You only need these functions when the two sides can get out of sync — for example, when the receiver rejoins a long-running session that has already experienced several wrap-arounds.
+
+<Note>
+  The initial ROC for a newly created stream is **0**. This is the correct starting point for a new session; only change it when synchronizing with a remote peer that has an already-advanced ROC.
+</Note>
+
+---
+
+## srtp_stream_set_roc()
+
+```c
+srtp_err_status_t srtp_stream_set_roc(srtp_t session,
+                                      uint32_t ssrc,
+                                      uint32_t roc);
+```
+
+Sets the roll-over counter for the stream identified by `ssrc` to `roc`. All subsequent `srtp_protect()` / `srtp_unprotect()` calls on that stream will use the new ROC as their base.
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session that contains the target stream.
+</ParamField>
+
+<ParamField path="ssrc" type="uint32_t" required>
+  SSRC of the stream whose ROC will be set, in **host byte order**.
+</ParamField>
+
+<ParamField path="roc" type="uint32_t" required>
+  The new roll-over counter value to apply to the stream.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  ROC was set successfully.
+</ResponseField>
+<ResponseField name="srtp_err_status_bad_param" type="2">
+  No stream with the given SSRC was found in the session.
+</ResponseField>
+
+---
+
+## srtp_stream_get_roc()
+
+```c
+srtp_err_status_t srtp_stream_get_roc(srtp_t session,
+                                      uint32_t ssrc,
+                                      uint32_t *roc);
+```
+
+Reads the current roll-over counter for the stream identified by `ssrc` and writes it to the location pointed to by `roc`.
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session that contains the target stream.
+</ParamField>
+
+<ParamField path="ssrc" type="uint32_t" required>
+  SSRC of the stream whose ROC will be read, in **host byte order**.
+</ParamField>
+
+<ParamField path="roc" type="uint32_t *" required>
+  Output parameter. On success, the current ROC value is written to `*roc`.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  ROC was read successfully; `*roc` contains the current value.
+</ResponseField>
+<ResponseField name="srtp_err_status_bad_param" type="2">
+  No stream with the given SSRC was found in the session, or `roc` is `NULL`.
+</ResponseField>
+
+---
+
+## Example: ROC synchronization for session resumption
+
+The following example shows a receiver that saves the ROC when a stream is suspended and then restores it when the sender reconnects, so that SRTP packet-index verification continues from the correct point rather than resetting to zero.
+
+```c
+#include <srtp3/srtp.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* --- Save the ROC before suspending a stream --- */
+srtp_err_status_t save_stream_roc(srtp_t session,
+                                  uint32_t ssrc,
+                                  uint32_t *saved_roc)
+{
+    srtp_err_status_t status = srtp_stream_get_roc(session, ssrc, saved_roc);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_stream_get_roc failed: %d\n", status);
+        return status;
+    }
+    printf("stream 0x%08x suspended at ROC %u\n", ssrc, *saved_roc);
+    return srtp_err_status_ok;
+}
+
+/* --- Restore the ROC when the sender reconnects --- */
+srtp_err_status_t restore_stream_roc(srtp_t session,
+                                     uint32_t ssrc,
+                                     uint32_t saved_roc,
+                                     const uint8_t *master_key)
+{
+    srtp_err_status_t status;
+    srtp_policy_t policy;
+
+    /* 1. Re-add the stream with the same key. */
+    memset(&policy, 0, sizeof(policy));
+    policy.ssrc.type  = ssrc_specific;
+    policy.ssrc.value = ssrc;
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.key  = (uint8_t *)master_key;
+    policy.next = NULL;
+
+    status = srtp_stream_add(session, &policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_stream_add failed: %d\n", status);
+        return status;
+    }
+
+    /* 2. Restore the ROC so the packet index picks up where it left off. */
+    status = srtp_stream_set_roc(session, ssrc, saved_roc);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_stream_set_roc failed: %d\n", status);
+        return status;
+    }
+
+    printf("stream 0x%08x resumed from ROC %u\n", ssrc, saved_roc);
+    return srtp_err_status_ok;
+}
+```
+
+<Warning>
+  Setting the ROC to a value lower than the current stream state will cause previously valid packets to appear as replays and be rejected. Always restore the exact ROC value that was in effect when the stream was suspended. If the sender may have continued transmitting during the outage, restore the highest known ROC.
+</Warning>

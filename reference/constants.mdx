@@ -1,0 +1,200 @@
+---
+title: 'Constants'
+description: 'Reference for all public constants, macros, and enumerations defined in srtp.h.'
+keywords: ['srtp constants', 'srtp macros', 'key length', 'srtp_profile_t', 'SRTP_MAX_TRAILER_LEN']
+---
+
+All constants listed on this page are defined in `include/srtp.h` and are part of the stable public API.
+
+---
+
+## Key size constants
+
+These constants define the sizes of keys and salts used by the supported cipher suites. Use them when allocating key material and when calling policy setup functions.
+
+### AES key lengths
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_AES_128_KEY_LEN` | 16 | AES-128 key length in bytes. |
+| `SRTP_AES_192_KEY_LEN` | 24 | AES-192 key length in bytes. |
+| `SRTP_AES_256_KEY_LEN` | 32 | AES-256 key length in bytes. |
+
+### Salt lengths
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_SALT_LEN` | 14 | Salt length in bytes for AES Counter Mode (ICM) cipher suites. |
+| `SRTP_AEAD_SALT_LEN` | 12 | Salt length in bytes for AES-GCM (AEAD) cipher suites. GCM requires a 12-byte IV formed from this salt and the packet index. |
+
+### Combined key-with-salt lengths (ICM)
+
+These constants represent the total byte length of the master key material you must provide — the cipher key concatenated with the salt — for ICM cipher suites.
+
+| Constant | Value (bytes) | Derivation |
+|----------|---------------|------------|
+| `SRTP_AES_ICM_128_KEY_LEN_WSALT` | 30 | `SRTP_AES_128_KEY_LEN` (16) + `SRTP_SALT_LEN` (14) |
+| `SRTP_AES_ICM_192_KEY_LEN_WSALT` | 38 | `SRTP_AES_192_KEY_LEN` (24) + `SRTP_SALT_LEN` (14) |
+| `SRTP_AES_ICM_256_KEY_LEN_WSALT` | 46 | `SRTP_AES_256_KEY_LEN` (32) + `SRTP_SALT_LEN` (14) |
+
+### Combined key-with-salt lengths (GCM / AEAD)
+
+| Constant | Value (bytes) | Derivation |
+|----------|---------------|------------|
+| `SRTP_AES_GCM_128_KEY_LEN_WSALT` | 28 | `SRTP_AES_128_KEY_LEN` (16) + `SRTP_AEAD_SALT_LEN` (12) |
+| `SRTP_AES_GCM_192_KEY_LEN_WSALT` | 36 | `SRTP_AES_192_KEY_LEN` (24) + `SRTP_AEAD_SALT_LEN` (12) |
+| `SRTP_AES_GCM_256_KEY_LEN_WSALT` | 44 | `SRTP_AES_256_KEY_LEN` (32) + `SRTP_AEAD_SALT_LEN` (12) |
+
+### Nominal and maximum key lengths
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_MASTER_KEY_LEN` | 30 | Nominal master key length for the default SRTP policy (AES-128-CM with 14-byte salt). Equivalent to `SRTP_AES_ICM_128_KEY_LEN_WSALT`. |
+| `SRTP_MAX_KEY_LEN` | 64 | Maximum key-plus-salt length accepted by libSRTP across all supported cipher suites. Use this when allocating a generic key buffer. |
+
+**Usage example:**
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+/* Allocate and zero-initialize key material for AES-128-ICM (the default profile). */
+uint8_t master_key[SRTP_AES_ICM_128_KEY_LEN_WSALT];
+memset(master_key, 0, sizeof(master_key));
+
+/* Populate from your key derivation / DTLS-SRTP keying material. */
+/* The first 16 bytes are the cipher key; the last 14 bytes are the salt. */
+memcpy(master_key, cipher_key, SRTP_AES_128_KEY_LEN);
+memcpy(master_key + SRTP_AES_128_KEY_LEN, salt, SRTP_SALT_LEN);
+
+srtp_policy_t policy;
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+policy.key = master_key;
+```
+
+---
+
+## Trailer length constants
+
+These constants describe the overhead that `srtp_protect()` and `srtp_protect_rtcp()` add to packets. You must allocate output buffers with enough room for the trailer. Use `srtp_get_protect_trailer_length()` to query the exact overhead for a live session.
+
+### SRTP (RTP) trailer
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_MAX_TAG_LEN` | 16 | Maximum authentication tag length in bytes (80-bit HMAC-SHA1 truncated to 10 bytes; 128-bit GCM tag is 16 bytes). |
+| `SRTP_MAX_MKI_LEN` | 128 | Maximum MKI (Master Key Identifier) field length in bytes as defined by RFC 3711. |
+| `SRTP_MAX_TRAILER_LEN` | 144 | Maximum total trailer added to an RTP packet by `srtp_protect()`. Computed as `SRTP_MAX_TAG_LEN + SRTP_MAX_MKI_LEN`. |
+| `SRTP_MAX_NUM_MASTER_KEYS` | 16 | Maximum number of master keys per stream when using MKI. |
+
+### SRTCP (RTCP) trailer
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_SRCTP_INDEX_LEN` | 4 | Length in bytes of the SRTCP packet index field appended to RTCP packets. |
+| `SRTP_MAX_SRTCP_TRAILER_LEN` | 148 | Maximum total trailer added to an RTCP packet by `srtp_protect_rtcp()`. Computed as `SRTP_SRCTP_INDEX_LEN + SRTP_MAX_TAG_LEN + SRTP_MAX_MKI_LEN`. |
+
+**Usage example:**
+
+```c
+#include <srtp3/srtp.h>
+#include <stdlib.h>
+
+/* Allocate an output buffer large enough for any SRTP packet. */
+size_t srtp_buf_len = rtp_len + SRTP_MAX_TRAILER_LEN;
+uint8_t *srtp_buf = malloc(srtp_buf_len);
+
+srtp_err_status_t status = srtp_protect(session, rtp, rtp_len,
+                                         srtp_buf, &srtp_buf_len, 0);
+
+/* For RTCP: */
+size_t srtcp_buf_len = rtcp_len + SRTP_MAX_SRTCP_TRAILER_LEN;
+uint8_t *srtcp_buf = malloc(srtcp_buf_len);
+```
+
+<Tip>
+If you use MKI in your policy, the actual MKI length is set by `mki_size` in `srtp_policy_t` and is typically far smaller than `SRTP_MAX_MKI_LEN`. Call `srtp_get_protect_trailer_length()` to get the exact value for your session rather than always allocating the maximum.
+</Tip>
+
+---
+
+## SRTCP index constants
+
+These constants are used internally when constructing and parsing the SRTCP packet index field. They are exposed in the public header for applications that process SRTCP packets directly.
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTCP_E_BIT` | `0x80000000` | The encryption (E) bit in the 32-bit SRTCP index, in host byte order. Set to 1 when the RTCP payload is encrypted; 0 when it is not. |
+| `SRTCP_E_BYTE_BIT` | `0x80` | The E bit accessed as a single byte. Useful for byte-level access to the first byte of the 4-byte index field. |
+| `SRTCP_INDEX_MASK` | `0x7fffffff` | Mask to extract the 31-bit SRTCP packet index from the 32-bit trailer word (the E bit occupies the MSB). |
+
+**Usage example:**
+
+```c
+#include <srtp3/srtp.h>
+#include <arpa/inet.h>
+
+/* Parse the SRTCP index field from the end of an SRTCP packet. */
+uint32_t trailer;
+memcpy(&trailer, srtcp_buf + srtcp_len - 4, 4);
+trailer = ntohl(trailer);
+
+bool is_encrypted  = (trailer & SRTCP_E_BIT) != 0;
+uint32_t pkt_index = trailer & SRTCP_INDEX_MASK;
+```
+
+---
+
+## srtp_profile_t
+
+`srtp_profile_t` identifies a complete DTLS-SRTP protection profile as defined in RFC 5764. Each profile specifies a cipher, key length, and authentication algorithm for both the RTP and RTCP streams.
+
+Use `srtp_crypto_policy_set_from_profile_for_rtp()` and `srtp_crypto_policy_set_from_profile_for_rtcp()` to configure a policy from a profile value, or `srtp_profile_get_master_key_length()` / `srtp_profile_get_master_salt_length()` to query the key material sizes required by a profile.
+
+| Value | Integer | Cipher | Auth | Notes |
+|-------|---------|--------|------|-------|
+| `srtp_profile_reserved` | 0 | — | — | Reserved; must not be used. |
+| `srtp_profile_aes128_cm_sha1_80` | 1 | AES-128-CTR | HMAC-SHA1-80 | Default SRTP profile. Most widely deployed. |
+| `srtp_profile_aes128_cm_sha1_32` | 2 | AES-128-CTR | HMAC-SHA1-32 | Shorter 32-bit tag. Suitable only for audio/video with stateless playback; not recommended for SRTCP. |
+| `srtp_profile_null_sha1_80` | 5 | None | HMAC-SHA1-80 | Authentication only; no encryption. Not recommended for general use. |
+| `srtp_profile_null_sha1_32` | 6 | None | HMAC-SHA1-32 | Authentication only with a short tag. Not recommended. |
+| `srtp_profile_aead_aes_128_gcm` | 7 | AES-128-GCM | GCM (built-in) | AEAD mode; requires a crypto backend with GCM support (OpenSSL, WolfSSL, Mbedtls, NSS). |
+| `srtp_profile_aead_aes_256_gcm` | 8 | AES-256-GCM | GCM (built-in) | AEAD mode with 256-bit key. Strongest available profile. |
+
+<Note>
+`srtp_profile_null_sha1_80` and `srtp_profile_null_sha1_32` skip encryption entirely. They should only be used when confidentiality is not required and authentication alone is sufficient.
+</Note>
+
+<Warning>
+`srtp_profile_aes128_cm_sha1_32` uses a 32-bit authentication tag. RFC 3711 §7.5 states this length is adequate only for stateless media playback. Do not use it for SRTCP.
+</Warning>
+
+**Usage example:**
+
+```c
+#include <srtp3/srtp.h>
+
+/* Configure a policy from a DTLS-SRTP negotiated profile. */
+srtp_profile_t profile = srtp_profile_aes128_cm_sha1_80;
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(policy));
+
+srtp_crypto_policy_set_from_profile_for_rtp(&policy.rtp, profile);
+srtp_crypto_policy_set_from_profile_for_rtcp(&policy.rtcp, profile);
+
+/* Allocate key material of the correct size for this profile. */
+size_t key_len  = srtp_profile_get_master_key_length(profile);
+size_t salt_len = srtp_profile_get_master_salt_length(profile);
+uint8_t master_key[SRTP_MAX_KEY_LEN];
+
+/* ... fill master_key with key_len bytes of key + salt_len bytes of salt ... */
+srtp_append_salt_to_key(master_key, key_len, salt_buf, salt_len);
+
+policy.key = master_key;
+policy.ssrc.type = ssrc_any_outbound;
+
+srtp_t session;
+srtp_create(&session, &policy);
+```

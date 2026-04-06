@@ -1,122 +1,104 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "libSRTP",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#956fb1",
+    "light": "#3b2c47",
+    "dark": "#ffffff"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/ae347578-78c4-452b-8081-5fce168a4c9f.png",
+  "logo": {
+    "light": "https://media.brand.dev/e98dfde5-adf6-455f-80ee-5309c6a36bf2.svg",
+    "dark": "https://media.brand.dev/e98dfde5-adf6-455f-80ee-5309c6a36bf2.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/cisco/libsrtp"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/cisco/libsrtp"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "building"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/sessions-and-streams",
+              "concepts/crypto-policies",
+              "concepts/key-management"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "guides/protecting-rtp",
+              "guides/protecting-rtcp",
+              "guides/event-handling",
+              "guides/crypto-backends"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Reference",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "reference/error-codes",
+              "reference/constants",
+              "reference/changelog"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Session Management",
             "pages": [
-              "api-reference/introduction"
+              "api/srtp-init",
+              "api/srtp-create",
+              "api/srtp-dealloc"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Packet Processing",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/srtp-protect",
+              "api/srtp-unprotect",
+              "api/srtp-protect-rtcp",
+              "api/srtp-unprotect-rtcp"
+            ]
+          },
+          {
+            "group": "Stream Management",
+            "pages": [
+              "api/stream-operations",
+              "api/stream-roc"
+            ]
+          },
+          {
+            "group": "Crypto Policies",
+            "pages": [
+              "api/crypto-policy-aes-cm",
+              "api/crypto-policy-aes-gcm"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

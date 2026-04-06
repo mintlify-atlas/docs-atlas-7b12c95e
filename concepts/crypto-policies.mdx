@@ -1,0 +1,274 @@
+---
+title: 'Crypto policies'
+description: 'Configure the cipher, authentication function, and security services applied to each SRTP stream using srtp_crypto_policy_t and the built-in policy presets.'
+keywords: ['srtp_crypto_policy_t', 'srtp_sec_serv_t', 'AES-GCM', 'AES-CM', 'HMAC-SHA1', 'srtp_profile_t']
+---
+
+## Overview
+
+A crypto policy defines the cryptographic algorithms and parameters applied to a single SRTP or SRTCP stream. In libSRTP, crypto policies are expressed through the `srtp_crypto_policy_t` struct. Each `srtp_policy_t` carries two of them: one for RTP traffic and one for RTCP traffic.
+
+Rather than filling in the struct fields manually, you should use one of the built-in preset functions. This ensures forward compatibility as the struct gains new fields in future versions of the library.
+
+## The `srtp_crypto_policy_t` struct
+
+```c
+typedef struct srtp_crypto_policy_t {
+    srtp_cipher_type_id_t cipher_type;  /* integer ID of the cipher algorithm      */
+    size_t                cipher_key_len; /* cipher key length in bytes             */
+    srtp_auth_type_id_t   auth_type;    /* integer ID of the auth function         */
+    size_t                auth_key_len; /* authentication key length in bytes      */
+    size_t                auth_tag_len; /* authentication tag length in bytes      */
+    srtp_sec_serv_t       sec_serv;     /* security services to apply              */
+} srtp_crypto_policy_t;
+```
+
+| Field | Description |
+|---|---|
+| `cipher_type` | Identifies which cipher to use. Populated by the preset functions. |
+| `cipher_key_len` | Total key material consumed by the cipher, including the appended salt. |
+| `auth_type` | Identifies the authentication function (e.g. HMAC-SHA1) or `SRTP_NULL_AUTH`. |
+| `auth_key_len` | Length of the key passed to the authentication function. |
+| `auth_tag_len` | Length of the authentication tag appended to each packet. |
+| `sec_serv` | A bitmask that selects which security services are active for this stream. |
+
+## Security services: `srtp_sec_serv_t`
+
+```c
+typedef enum {
+    sec_serv_none         = 0, /* no protection                          */
+    sec_serv_conf         = 1, /* confidentiality (encryption only)      */
+    sec_serv_auth         = 2, /* authentication (integrity only)        */
+    sec_serv_conf_and_auth = 3 /* confidentiality + authentication       */
+} srtp_sec_serv_t;
+```
+
+<Warning>
+Using `sec_serv_conf` alone (encryption without authentication) is **not recommended** unless absolutely unavoidable. Without authentication, an attacker can manipulate the encrypted payload without detection. See RFC 3711 §7.5.
+</Warning>
+
+The `sec_serv_conf_and_auth` value is the default for all recommended presets.
+
+## Key length constants
+
+These constants define the key and salt sizes used by the supported cipher suites.
+
+```c
+/* Raw AES key sizes */
+#define SRTP_AES_128_KEY_LEN    16   /* bytes */
+#define SRTP_AES_192_KEY_LEN    24   /* bytes */
+#define SRTP_AES_256_KEY_LEN    32   /* bytes */
+
+/* Salt lengths */
+#define SRTP_SALT_LEN           14   /* for AES-ICM (Counter Mode) */
+#define SRTP_AEAD_SALT_LEN      12   /* for AES-GCM */
+
+/* AES-ICM key + salt (what cipher_key_len is set to) */
+#define SRTP_AES_ICM_128_KEY_LEN_WSALT  30  /* 16 + 14 */
+#define SRTP_AES_ICM_192_KEY_LEN_WSALT  38  /* 24 + 14 */
+#define SRTP_AES_ICM_256_KEY_LEN_WSALT  46  /* 32 + 14 */
+
+/* AES-GCM key + salt */
+#define SRTP_AES_GCM_128_KEY_LEN_WSALT  28  /* 16 + 12 */
+#define SRTP_AES_GCM_192_KEY_LEN_WSALT  36  /* 24 + 12 */
+#define SRTP_AES_GCM_256_KEY_LEN_WSALT  44  /* 32 + 12 */
+```
+
+The key buffer you supply to `srtp_policy_t.key` must hold the concatenated key and salt. For example, AES-128-CM needs a 30-byte buffer: 16 bytes of key followed by 14 bytes of salt.
+
+## Built-in policy presets
+
+All preset functions take a pointer to an `srtp_crypto_policy_t` and fill it in. They return `void`.
+
+### Default RTP and RTCP policies
+
+<CodeGroup>
+
+```c srtp_crypto_policy_set_rtp_default
+void srtp_crypto_policy_set_rtp_default(srtp_crypto_policy_t *p);
+```
+
+```c srtp_crypto_policy_set_rtcp_default
+void srtp_crypto_policy_set_rtcp_default(srtp_crypto_policy_t *p);
+```
+
+</CodeGroup>
+
+Both functions configure:
+
+- **Cipher:** AES-128 Counter Mode (AES-128-CM)
+- **Cipher key length:** 30 bytes (`SRTP_AES_ICM_128_KEY_LEN_WSALT`)
+- **Auth function:** HMAC-SHA1
+- **Auth tag length:** 10 bytes (80-bit tag)
+- **Security services:** `sec_serv_conf_and_auth`
+
+`srtp_crypto_policy_set_aes_cm_128_hmac_sha1_80()` is a macro alias for `srtp_crypto_policy_set_rtp_default()` that follows the naming convention of RFC 4568.
+
+```c
+/* typical usage */
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(policy));
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+```
+
+### AES-128-CM with 32-bit authentication tag
+
+```c
+void srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32(srtp_crypto_policy_t *p);
+```
+
+Same cipher as the default but with a shorter 4-byte (32-bit) authentication tag.
+
+<Warning>
+The 32-bit tag provides weaker authentication than the 80-bit default. RFC 3711 §7.5 considers it adequate only for audio and video streams that use stateless playback. It must **not** be used for SRTCP — use a policy with a longer tag for RTCP.
+</Warning>
+
+### AES-256-CM with 80-bit authentication tag
+
+```c
+void srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80(srtp_crypto_policy_t *p);
+```
+
+Configures:
+
+- **Cipher:** AES-256 Counter Mode
+- **Cipher key length:** 46 bytes (`SRTP_AES_ICM_256_KEY_LEN_WSALT`)
+- **Auth tag length:** 10 bytes (80-bit tag)
+- **Security services:** `sec_serv_conf_and_auth`
+
+As defined in RFC 6188. Use this when your security requirements call for a 256-bit key.
+
+### AES-GCM (AEAD) policies
+
+AES-GCM is an Authenticated Encryption with Associated Data (AEAD) cipher. It provides both confidentiality and authentication in a single pass, without a separate HMAC step.
+
+<CodeGroup>
+
+```c AES-128-GCM
+void srtp_crypto_policy_set_aes_gcm_128_16_auth(srtp_crypto_policy_t *p);
+```
+
+```c AES-256-GCM
+void srtp_crypto_policy_set_aes_gcm_256_16_auth(srtp_crypto_policy_t *p);
+```
+
+</CodeGroup>
+
+Both configure a 16-byte (128-bit) authentication tag and `sec_serv_conf_and_auth`. The key lengths are:
+
+| Preset | Cipher key length |
+|---|---|
+| `srtp_crypto_policy_set_aes_gcm_128_16_auth` | 28 bytes (`SRTP_AES_GCM_128_KEY_LEN_WSALT`) |
+| `srtp_crypto_policy_set_aes_gcm_256_16_auth` | 44 bytes (`SRTP_AES_GCM_256_KEY_LEN_WSALT`) |
+
+<Note>
+AES-GCM ciphers require a 3rd-party crypto backend (OpenSSL, wolfSSL, mbedTLS, or NSS). The built-in libSRTP crypto kernel does not support GCM. Build the library with `--with-crypto-library=openssl` (autotools) or `-DCRYPTO_LIBRARY=openssl` (CMake). See [Crypto backends](/guides/crypto-backends) for full details.
+</Note>
+
+### Null cipher and null authentication (testing only)
+
+<CodeGroup>
+
+```c encryption only (not recommended)
+void srtp_crypto_policy_set_aes_cm_128_null_auth(srtp_crypto_policy_t *p);
+```
+
+```c authentication only (not recommended)
+void srtp_crypto_policy_set_null_cipher_hmac_sha1_80(srtp_crypto_policy_t *p);
+```
+
+```c no protection (testing only)
+void srtp_crypto_policy_set_null_cipher_hmac_null(srtp_crypto_policy_t *p);
+```
+
+</CodeGroup>
+
+<Warning>
+These presets are not recommended for production use. `srtp_crypto_policy_set_null_cipher_hmac_null()` provides zero protection and should only be used for debugging or testing.
+</Warning>
+
+## Preset summary
+
+| Preset function | Cipher | Key bits | Auth | Tag bits | RFC |
+|---|---|---|---|---|---|
+| `srtp_crypto_policy_set_rtp_default` | AES-128-CM | 128 | HMAC-SHA1 | 80 | RFC 3711 |
+| `srtp_crypto_policy_set_rtcp_default` | AES-128-CM | 128 | HMAC-SHA1 | 80 | RFC 3711 |
+| `srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32` | AES-128-CM | 128 | HMAC-SHA1 | 32 | RFC 4568 |
+| `srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80` | AES-256-CM | 256 | HMAC-SHA1 | 80 | RFC 6188 |
+| `srtp_crypto_policy_set_aes_gcm_128_16_auth` | AES-128-GCM | 128 | AEAD | 128 | RFC 7714 |
+| `srtp_crypto_policy_set_aes_gcm_256_16_auth` | AES-256-GCM | 256 | AEAD | 128 | RFC 7714 |
+
+## Choosing a policy
+
+<AccordionGroup>
+  <Accordion title="Standard RTP/RTCP — interoperability is the priority">
+    Use `srtp_crypto_policy_set_rtp_default()` for RTP and `srtp_crypto_policy_set_rtcp_default()` for RTCP. This is the mandatory-to-implement suite defined in RFC 3711 and is universally supported.
+  </Accordion>
+
+  <Accordion title="Higher key strength required">
+    Use `srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80()` for both RTP and RTCP. You must supply a 46-byte key+salt buffer (`SRTP_AES_ICM_256_KEY_LEN_WSALT`).
+  </Accordion>
+
+  <Accordion title="AEAD / modern suite">
+    Use `srtp_crypto_policy_set_aes_gcm_128_16_auth()` or `srtp_crypto_policy_set_aes_gcm_256_16_auth()`. These are defined in RFC 7714 and provide stronger authentication guarantees than HMAC-SHA1 while also being more efficient. Requires a 3rd-party crypto backend.
+  </Accordion>
+
+  <Accordion title="Reduced authentication tag for audio/video (bandwidth-sensitive)">
+    Use `srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32()` for RTP only. Use the full 80-bit tag for RTCP. The shorter tag saves 6 bytes per packet but weakens authentication.
+  </Accordion>
+</AccordionGroup>
+
+## Setting a policy from an `srtp_profile_t`
+
+When building on top of DTLS-SRTP (RFC 5764), the negotiated profile is expressed as an `srtp_profile_t` enum. You can convert it directly to an `srtp_crypto_policy_t` without manually selecting a preset.
+
+```c
+typedef enum {
+    srtp_profile_reserved       = 0,
+    srtp_profile_aes128_cm_sha1_80 = 1,
+    srtp_profile_aes128_cm_sha1_32 = 2,
+    srtp_profile_null_sha1_80   = 5,
+    srtp_profile_null_sha1_32   = 6,
+    srtp_profile_aead_aes_128_gcm = 7,
+    srtp_profile_aead_aes_256_gcm = 8
+} srtp_profile_t;
+```
+
+```c
+srtp_err_status_t srtp_crypto_policy_set_from_profile_for_rtp(
+    srtp_crypto_policy_t *policy,
+    srtp_profile_t        profile);
+
+srtp_err_status_t srtp_crypto_policy_set_from_profile_for_rtcp(
+    srtp_crypto_policy_t *policy,
+    srtp_profile_t        profile);
+```
+
+These functions return `srtp_err_status_ok` on success, or `srtp_err_status_bad_param` if the profile is not supported. Helper functions are also available to query key and salt lengths for a profile:
+
+```c
+size_t srtp_profile_get_master_key_length(srtp_profile_t profile);
+size_t srtp_profile_get_master_salt_length(srtp_profile_t profile);
+```
+
+### Example: DTLS-SRTP profile negotiation
+
+```c
+srtp_profile_t negotiated_profile = srtp_profile_aes128_cm_sha1_80;
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(policy));
+
+srtp_crypto_policy_set_from_profile_for_rtp(&policy.rtp, negotiated_profile);
+srtp_crypto_policy_set_from_profile_for_rtcp(&policy.rtcp, negotiated_profile);
+
+/* allocate key buffer sized for this profile */
+size_t key_len  = srtp_profile_get_master_key_length(negotiated_profile);
+size_t salt_len = srtp_profile_get_master_salt_length(negotiated_profile);
+uint8_t key_buf[key_len + salt_len];
+
+/* ... fill key_buf from DTLS keying material ... */
+srtp_append_salt_to_key(key_buf, key_len, salt_buf, salt_len);
+policy.key = key_buf;
+```

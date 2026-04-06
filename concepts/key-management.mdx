@@ -1,0 +1,313 @@
+---
+title: 'Key management'
+description: 'Manage master keys, MKI-based multi-key sessions, key rotation with srtp_update(), and the roll-over counter in libSRTP.'
+keywords: ['master key', 'MKI', 'srtp_master_key_t', 'srtp_update', 'ROC', 'roll-over counter', 'key rotation', 'replay window']
+---
+
+## Overview
+
+libSRTP operates on a master key / master salt pair. The SRTP protocol derives session keys from this material using a key derivation function (KDF). You supply the master key material to the library through `srtp_policy_t`; libSRTP handles all KDF operations internally.
+
+## Key length constants
+
+```c
+/* nominal master key length for AES-128-CM (key + salt) */
+#define SRTP_MASTER_KEY_LEN     30   /* 16-byte key + 14-byte salt */
+
+/* absolute maximum key material length the library will accept */
+#define SRTP_MAX_KEY_LEN        64   /* bytes */
+
+/* maximum number of master keys in a single policy (MKI mode) */
+#define SRTP_MAX_NUM_MASTER_KEYS 16
+
+/* salt lengths */
+#define SRTP_SALT_LEN           14   /* AES-ICM (Counter Mode) */
+#define SRTP_AEAD_SALT_LEN      12   /* AES-GCM */
+
+/* per-cipher key + salt widths */
+#define SRTP_AES_ICM_128_KEY_LEN_WSALT  30  /* 16 + 14 */
+#define SRTP_AES_ICM_192_KEY_LEN_WSALT  38  /* 24 + 14 */
+#define SRTP_AES_ICM_256_KEY_LEN_WSALT  46  /* 32 + 14 */
+#define SRTP_AES_GCM_128_KEY_LEN_WSALT  28  /* 16 + 12 */
+#define SRTP_AES_GCM_256_KEY_LEN_WSALT  44  /* 32 + 12 */
+```
+
+The key buffer you provide must contain the key bytes immediately followed by the salt bytes. Use `srtp_append_salt_to_key()` to assemble the buffer:
+
+```c
+void srtp_append_salt_to_key(uint8_t *key,
+                             size_t   bytes_in_key,
+                             uint8_t *salt,
+                             size_t   bytes_in_salt);
+```
+
+This copies `salt` into the memory immediately following the key at `key + bytes_in_key`. The buffer must have at least `bytes_in_key + bytes_in_salt` bytes available.
+
+## Single master key
+
+The simplest case: one master key per stream. Set the `key` field in `srtp_policy_t` and leave `keys`, `num_master_keys`, and `use_mki` at their zero-initialised defaults.
+
+```c
+/* AES-128-CM default: 30-byte key+salt buffer */
+uint8_t master_key[SRTP_MASTER_KEY_LEN] = {
+    /* 16-byte key */
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    /* 14-byte salt */
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d
+};
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(policy));
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+policy.ssrc.type  = ssrc_specific;
+policy.ssrc.value = my_ssrc;
+policy.key        = master_key;   /* single key, no MKI */
+policy.next       = NULL;
+
+srtp_t session;
+srtp_create(&session, &policy);
+```
+
+## Multiple master keys with MKI
+
+The Master Key Identifier (MKI) is an optional field that can be appended to SRTP packets to indicate which master key was used to protect the packet. This allows a receiver to select the correct key from a set, which is necessary during key rollover so that both old and new keys are accepted simultaneously.
+
+### The `srtp_master_key_t` struct
+
+```c
+typedef struct srtp_master_key_t {
+    uint8_t *key;    /* pointer to key+salt buffer for this master key */
+    uint8_t *mki_id; /* pointer to the MKI identifier bytes           */
+} srtp_master_key_t;
+```
+
+Both pointers must remain valid for the lifetime of the session.
+
+### Relevant fields in `srtp_policy_t`
+
+```c
+typedef struct srtp_policy_t {
+    /* ... other fields ... */
+    uint8_t            *key;             /* single-key mode: key+salt buffer  */
+    srtp_master_key_t **keys;            /* MKI mode: array of key pointers   */
+    size_t              num_master_keys; /* number of entries in keys[]       */
+    bool                use_mki;         /* enable MKI field in packets       */
+    size_t              mki_size;        /* byte length of MKI field          */
+    /* ... other fields ... */
+} srtp_policy_t;
+```
+
+When `use_mki` is `true`, the library reads and writes the MKI field in each packet. The `mki_index` parameter of `srtp_protect()` and `srtp_protect_rtcp()` selects which key from the `keys` array to use for that packet.
+
+### MKI example
+
+```c
+#define NUM_KEYS 2
+#define MKI_SIZE 4   /* 4-byte MKI */
+
+/* key material (each buffer is key+salt for AES-128-CM) */
+uint8_t key_material_0[SRTP_MASTER_KEY_LEN] = { /* ... */ };
+uint8_t key_material_1[SRTP_MASTER_KEY_LEN] = { /* ... */ };
+
+/* MKI identifiers — must be mki_size bytes each */
+uint8_t mki_id_0[MKI_SIZE] = { 0x00, 0x00, 0x00, 0x01 };
+uint8_t mki_id_1[MKI_SIZE] = { 0x00, 0x00, 0x00, 0x02 };
+
+/* populate srtp_master_key_t structures */
+srtp_master_key_t mk0 = { .key = key_material_0, .mki_id = mki_id_0 };
+srtp_master_key_t mk1 = { .key = key_material_1, .mki_id = mki_id_1 };
+
+/* array of pointers — up to SRTP_MAX_NUM_MASTER_KEYS (16) entries */
+srtp_master_key_t *key_array[NUM_KEYS] = { &mk0, &mk1 };
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(policy));
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+policy.ssrc.type        = ssrc_any_outbound;
+policy.keys             = key_array;
+policy.num_master_keys  = NUM_KEYS;
+policy.use_mki          = true;
+policy.mki_size         = MKI_SIZE;
+policy.next             = NULL;
+
+srtp_t session;
+srtp_create(&session, &policy);
+
+/* protect a packet using key index 0 */
+srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 0 /* mki_index */);
+
+/* protect a packet using key index 1 (during rollover) */
+srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 1 /* mki_index */);
+```
+
+<Note>
+The maximum number of master keys per policy is `SRTP_MAX_NUM_MASTER_KEYS` (16). The maximum MKI field length is `SRTP_MAX_MKI_LEN` (128 bytes).
+</Note>
+
+## Key rotation
+
+When a key expires (signalled by the `event_key_soft_limit` or `event_key_hard_limit` events), you need to install a new key without disrupting the stream's replay protection state or roll-over counter.
+
+### `srtp_update()` — update all streams in a session
+
+```c
+srtp_err_status_t srtp_update(srtp_t session, const srtp_policy_t *policy);
+```
+
+Applies the new policy (and key) to every stream in the session that matches an entry in the policy list. The existing ROC value for each stream is preserved.
+
+### `srtp_stream_update()` — update a single stream
+
+```c
+srtp_err_status_t srtp_stream_update(srtp_t session, const srtp_policy_t *policy);
+```
+
+Applies the new policy to the stream(s) matching the SSRC in `policy->ssrc`. The ROC is preserved.
+
+### Key rotation pattern
+
+<Steps>
+  <Step title="Install an event handler">
+    Register a callback to receive key-expiry events.
+
+    ```c
+    void my_event_handler(srtp_event_data_t *data) {
+        if (data->event == event_key_soft_limit) {
+            /* schedule key rotation before hard limit is reached */
+            schedule_key_rotation(data->session, data->ssrc);
+        }
+    }
+
+    srtp_install_event_handler(my_event_handler);
+    ```
+  </Step>
+
+  <Step title="Generate new key material">
+    Produce a new master key and salt from your key management system (DTLS-SRTP renegotiation, MIKEY, or application-level mechanism).
+
+    ```c
+    uint8_t new_key[SRTP_MASTER_KEY_LEN];
+    generate_key_material(new_key, sizeof(new_key));
+    ```
+  </Step>
+
+  <Step title="Build a new policy with the new key">
+    The SSRC, crypto algorithms, and other parameters usually stay the same — only the key changes.
+
+    ```c
+    srtp_policy_t new_policy;
+    memset(&new_policy, 0, sizeof(new_policy));
+    srtp_crypto_policy_set_rtp_default(&new_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&new_policy.rtcp);
+    new_policy.ssrc.type  = ssrc_specific;
+    new_policy.ssrc.value = target_ssrc;
+    new_policy.key        = new_key;
+    new_policy.next       = NULL;
+    ```
+  </Step>
+
+  <Step title="Apply the update">
+    Call `srtp_stream_update()` to swap in the new key without resetting the ROC.
+
+    ```c
+    srtp_err_status_t status = srtp_stream_update(session, &new_policy);
+    if (status != srtp_err_status_ok) {
+        /* handle error */
+    }
+    ```
+  </Step>
+</Steps>
+
+## Roll-over counter (ROC)
+
+RTP sequence numbers are 16-bit values that wrap around at 65535. The roll-over counter (ROC) tracks how many times the sequence number has wrapped, extending the effective packet index to 48 bits. libSRTP uses the full 48-bit index for replay protection and for deriving the IV used by the cipher.
+
+### Getting and setting the ROC
+
+```c
+/* read the current ROC for a stream identified by ssrc */
+srtp_err_status_t srtp_stream_get_roc(srtp_t   session,
+                                      uint32_t ssrc,
+                                      uint32_t *roc);
+
+/* force the ROC to a specific value */
+srtp_err_status_t srtp_stream_set_roc(srtp_t   session,
+                                      uint32_t ssrc,
+                                      uint32_t roc);
+```
+
+<Warning>
+Setting the ROC to an incorrect value will cause all subsequent authentication checks to fail. Only set the ROC when you have out-of-band knowledge of the sender's current packet index — for example, when reconstructing a stream after a session failure.
+</Warning>
+
+## Replay protection
+
+libSRTP maintains a sliding window of recently received packet indices per stream. Any packet whose index falls within the window and has already been accepted is rejected as a replay.
+
+### `window_size` field
+
+```c
+typedef struct srtp_policy_t {
+    /* ... */
+    size_t window_size; /* number of packets in the replay-protection window */
+    /* ... */
+} srtp_policy_t;
+```
+
+Setting `window_size` to `0` lets libSRTP use its internal default. A larger window tolerates more packet reordering but uses more memory. The SRTCP replay window is hardcoded to 128 bits regardless of this setting.
+
+### `allow_repeat_tx` field
+
+```c
+typedef struct srtp_policy_t {
+    /* ... */
+    bool allow_repeat_tx; /* permit retransmission of the same sequence number */
+    /* ... */
+} srtp_policy_t;
+```
+
+By default (`false`), libSRTP rejects packets with a sequence number that has already been sent, treating them as a potential replay attack. Setting `allow_repeat_tx` to `true` permits this for legitimate retransmission scenarios (e.g. RTCP-based repair).
+
+<Warning>
+If `allow_repeat_tx` is `true`, any retransmitted packet **must** carry the exact same RTP payload as the original. Sending a different payload under the same sequence number with the same key creates a serious security weakness: an attacker can XOR the two ciphertexts to recover the XOR of the two plaintexts.
+</Warning>
+
+## Security best practices
+
+<AccordionGroup>
+  <Accordion title="Never reuse a key with a different salt">
+    The session keys derived by the SRTP KDF depend on both the master key and the master salt. Reusing the same master key bytes with a different salt generates different session keys, but this is an unusual configuration. Always treat the key and salt as an indivisible unit.
+  </Accordion>
+
+  <Accordion title="Use separate keys for inbound and outbound traffic">
+    libSRTP detects and rejects the case where the same key is used for both `srtp_protect()` and `srtp_unprotect()`. Use `ssrc_any_inbound` and `ssrc_any_outbound` as separate policy entries with distinct keys when you need wildcard policies in both directions.
+  </Accordion>
+
+  <Accordion title="Zero key material before freeing it">
+    The `key` pointer in `srtp_policy_t` is owned by the caller. After calling `srtp_dealloc()` or `srtp_stream_remove()`, explicitly zero the key buffer before releasing it to prevent the master key from remaining in heap memory.
+
+    ```c
+    srtp_dealloc(session);
+    memset(master_key, 0, sizeof(master_key));
+    ```
+  </Accordion>
+
+  <Accordion title="Handle key expiry events promptly">
+    Register an event handler with `srtp_install_event_handler()` to receive `event_key_soft_limit` notifications. Rotate the key before the hard limit is reached; once `event_key_hard_limit` fires, the stream enters an expired state and can no longer protect or unprotect packets.
+  </Accordion>
+
+  <Accordion title="Buffer sizes for SRTP output">
+    The `srtp_protect()` function appends an authentication tag and optionally an MKI to the packet. Allocate at least `rtp_len + SRTP_MAX_TRAILER_LEN` bytes for the output buffer to prevent memory corruption.
+
+    ```c
+    /* SRTP_MAX_TRAILER_LEN = SRTP_MAX_TAG_LEN (16) + SRTP_MAX_MKI_LEN (128) */
+    uint8_t srtp_buf[rtp_len + SRTP_MAX_TRAILER_LEN];
+    size_t  srtp_len = sizeof(srtp_buf);
+    srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 0);
+    ```
+  </Accordion>
+</AccordionGroup>

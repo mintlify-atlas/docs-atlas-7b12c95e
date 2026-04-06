@@ -1,0 +1,94 @@
+---
+title: "Introduction to libSRTP"
+description: "Learn what libSRTP is, why it exists, and how it protects RTP and RTCP traffic using industry-standard cryptography."
+---
+
+libSRTP is an open source C library from Cisco Systems that implements the Secure Real-time Transport Protocol (SRTP), as defined in [RFC 3711](https://tools.ietf.org/html/rfc3711). It provides encryption and authentication for RTP and RTCP streams — the protocols that carry audio and video in telephony, conferencing, and streaming applications.
+
+## Background
+
+RTP (Real-time Transport Protocol), defined in [RFC 3550](https://tools.ietf.org/html/rfc3550), is the IETF standard for transporting real-time media such as voice and video. By itself, RTP provides no security: its payloads are transmitted in the clear and its headers can be forged.
+
+SRTP addresses this by defining a security profile for RTP. It adds:
+
+- **Confidentiality** — encrypts the RTP payload so that intercepted packets cannot be read.
+- **Authentication** — protects the RTP header and payload against tampering.
+- **Replay protection** — prevents an attacker from re-injecting captured packets.
+
+SRTCP applies the same protections to RTCP, the RTP control protocol used for statistics, feedback, and session management.
+
+libSRTP implements all mandatory SRTP features and is used widely in VoIP, WebRTC, and video conferencing stacks.
+
+## What libSRTP provides
+
+<CardGroup cols={2}>
+  <Card title="SRTP and SRTCP protection" icon="shield">
+    Encrypt and authenticate outbound RTP/RTCP with `srtp_protect()` and `srtp_protect_rtcp()`. Verify and decrypt inbound packets with `srtp_unprotect()` and `srtp_unprotect_rtcp()`.
+  </Card>
+  <Card title="Multiple cipher suites" icon="lock">
+    Supports AES-128, AES-192, and AES-256 in counter mode (AES-ICM) and Galois/Counter Mode (AES-GCM, per [RFC 7714](https://tools.ietf.org/html/rfc7714)).
+  </Card>
+  <Card title="HMAC-SHA1 authentication" icon="key">
+    Provides message authentication using HMAC-SHA1 with 80-bit or 32-bit tags, as specified in RFC 3711.
+  </Card>
+  <Card title="Replay protection" icon="rotate-ccw">
+    Maintains per-stream replay windows to detect and reject duplicate or out-of-order packets injected by an attacker.
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+### Cipher support
+
+| Cipher | Key sizes | Requires external crypto |
+|--------|-----------|--------------------------|
+| AES-ICM (counter mode) | 128-bit, 256-bit | No (built-in) |
+| AES-ICM (counter mode) | 192-bit | Yes |
+| AES-GCM (AEAD) | 128-bit, 256-bit | Yes |
+
+<Note>
+The built-in crypto engine supports only AES-128 and AES-256 in counter mode. To use AES-192 or any AES-GCM cipher, you must build libSRTP with an external crypto backend (OpenSSL, wolfSSL, mbedTLS, or NSS). Using an external backend is strongly recommended for production use.
+</Note>
+
+### Crypto backends
+
+libSRTP can be built with one of the following crypto backends:
+
+| Backend | Notes |
+|---------|-------|
+| **OpenSSL** | Recommended. Enables AES-GCM, AES-192, and optionally OpenSSL KDF. |
+| **wolfSSL** | Embedded TLS library; enables AES-GCM and wolfSSL KDF. |
+| **mbedTLS** | Lightweight; enables AES-GCM. |
+| **NSS** | Mozilla's Network Security Services; enables AES-GCM. |
+| **Internal** | No external dependency; limited to AES-128 and AES-256 CTR only. |
+
+### Session and stream model
+
+libSRTP organises protection state around two types:
+
+- **`srtp_t`** — an opaque handle to an SRTP session. A session can contain multiple streams from different senders.
+- **`srtp_stream_t`** — state for a single SRTP stream, identified by its SSRC value. Each stream holds its own key material, cipher and authentication state, sequence counters, and replay window.
+
+Policy for a session is described by one or more `srtp_policy_t` structures linked in a list. Each policy element covers a single stream and specifies the cipher, authentication function, master key, and SSRC.
+
+## Supported RFC features
+
+libSRTP implements all mandatory features of [RFC 3711](https://tools.ietf.org/html/rfc3711). The following optional features are **not** supported:
+
+- Key derivation rates other than zero
+- The F8 cipher
+- Using the packet index to select between master keys (MKI-based key selection is supported separately)
+
+## Supported platforms
+
+libSRTP has been tested on Linux, macOS, Windows (via Cygwin, MinGW, and MSVC), Solaris, and OpenBSD. It supports three build systems:
+
+- **Autotools** (`./configure && make`) — traditional Unix build
+- **CMake** — cross-platform; required for Visual Studio on Windows
+- **Meson** — modern build system; works on all platforms including Windows
+
+## Next steps
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Build the library and write your first SRTP-protected packet in minutes.
+</Card>

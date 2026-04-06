@@ -1,0 +1,372 @@
+---
+title: 'Event handling'
+description: 'How to register event and log handlers in libSRTP, respond to SSRC collisions and key expiry, and attach custom context to sessions.'
+keywords: ['srtp events', 'event handler', 'key expiry', 'ssrc collision', 'srtp_install_event_handler', 'srtp_install_log_handler', 'srtp_set_user_data']
+---
+
+libSRTP fires events when conditions outside the normal data path need attention: SSRC collisions, approaching key usage limits, and expired keys. Handling these events correctly keeps your sessions secure.
+
+## Event types
+
+```c
+typedef enum {
+    event_ssrc_collision,    /* An SSRC collision was detected          */
+    event_key_soft_limit,    /* Stream is approaching key usage limit   */
+    event_key_hard_limit,    /* Stream key has expired                  */
+    event_packet_index_limit /* 2^48 packet limit reached               */
+} srtp_event_t;
+```
+
+<AccordionGroup>
+  <Accordion title="event_ssrc_collision">
+    Fired when libSRTP detects that the same SSRC value is being used by two different senders. Because SRTP associates one key per SSRC, a collision means a key is being shared across different streams — a security violation.
+
+    **Action:** call `srtp_stream_remove()` on the colliding SSRC to evict the rogue stream, then optionally re-add it with a fresh policy.
+  </Accordion>
+
+  <Accordion title="event_key_soft_limit">
+    Fired when a stream is approaching but has not yet reached its key usage limit. This is a warning: you have time to re-key before the hard limit cuts off traffic.
+
+    **Action:** begin the re-keying process. Call `srtp_update()` or `srtp_stream_update()` with a new master key while traffic continues.
+  </Accordion>
+
+  <Accordion title="event_key_hard_limit">
+    Fired when a stream has exhausted its master key. The stream enters an expired state: `srtp_protect()` and `srtp_unprotect()` will fail with `srtp_err_status_key_expired` for that SSRC until the stream is re-keyed.
+
+    **Action:** call `srtp_update()` or `srtp_stream_update()` immediately with a new master key.
+  </Accordion>
+
+  <Accordion title="event_packet_index_limit">
+    Fired when the 48-bit packet index for a stream rolls over (2^48 packets). This is an extremely rare condition in practice.
+
+    **Action:** treat the same as `event_key_hard_limit`: re-key or remove the stream.
+  </Accordion>
+</AccordionGroup>
+
+## Event data structure
+
+Every event delivers an `srtp_event_data_t` to your handler:
+
+```c
+typedef struct srtp_event_data_t {
+    srtp_t       session; /* The session in which the event happened    */
+    uint32_t     ssrc;    /* SSRC of the affected stream, in host order */
+    srtp_event_t event;   /* The event type                             */
+} srtp_event_data_t;
+```
+
+The `ssrc` field is in **host byte order**, consistent with the rest of the libSRTP API (as of version 3.0.0).
+
+## Handler prototype
+
+```c
+typedef void(srtp_event_handler_func_t)(srtp_event_data_t *data);
+```
+
+There is a single, **global** handler for all sessions in the process. If you need per-session context, retrieve it from `srtp_get_user_data()` inside the handler.
+
+## Registering a handler
+
+```c
+srtp_err_status_t srtp_install_event_handler(srtp_event_handler_func_t func);
+```
+
+Call this after `srtp_init()`. Pass `NULL` to silence all events.
+
+```c
+/* Forward declaration */
+void my_event_handler(srtp_event_data_t *data);
+
+/* Register */
+srtp_err_status_t status = srtp_install_event_handler(my_event_handler);
+if (status != srtp_err_status_ok) {
+    fprintf(stderr, "srtp_install_event_handler failed: %d\n", status);
+}
+```
+
+## Writing a handler
+
+```c
+void my_event_handler(srtp_event_data_t *data)
+{
+    /* Retrieve any custom context you stored on the session */
+    my_app_ctx_t *ctx = (my_app_ctx_t *)srtp_get_user_data(data->session);
+
+    switch (data->event) {
+    case event_ssrc_collision:
+        fprintf(stderr, "SSRC collision on SSRC 0x%08x — removing stream\n",
+                data->ssrc);
+        srtp_stream_remove(data->session, data->ssrc);
+        break;
+
+    case event_key_soft_limit:
+        fprintf(stderr, "SSRC 0x%08x approaching key limit — re-keying\n",
+                data->ssrc);
+        if (ctx) {
+            /* Signal application to begin re-keying asynchronously */
+            ctx->rekey_needed = true;
+            ctx->rekey_ssrc   = data->ssrc;
+        }
+        break;
+
+    case event_key_hard_limit:
+        fprintf(stderr, "SSRC 0x%08x key expired — re-keying now\n",
+                data->ssrc);
+        if (ctx && ctx->new_policy_ready) {
+            srtp_stream_update(data->session, &ctx->new_policy);
+        }
+        break;
+
+    case event_packet_index_limit:
+        fprintf(stderr, "SSRC 0x%08x reached 2^48 packet limit\n",
+                data->ssrc);
+        srtp_stream_remove(data->session, data->ssrc);
+        break;
+    }
+}
+```
+
+<Warning>
+  The event handler is called from within `srtp_protect()` or `srtp_unprotect()` on the same thread that processes the packet. Avoid blocking operations inside the handler. If re-keying requires network round-trips, set a flag and do the work from another thread.
+</Warning>
+
+## Re-keying
+
+### Update all streams in a session
+
+```c
+srtp_err_status_t srtp_update(srtp_t session, const srtp_policy_t *policy);
+```
+
+Updates every stream in `session` to the new key in `policy`. The existing rollover counter (ROC) is preserved so packet index continuity is maintained.
+
+### Update a single stream
+
+```c
+srtp_err_status_t srtp_stream_update(srtp_t session,
+                                     const srtp_policy_t *policy);
+```
+
+Updates only the stream whose SSRC matches `policy.ssrc.value`.
+
+### Example re-key on hard limit
+
+```c
+static void rekey_stream(srtp_t session, uint32_t ssrc,
+                         const uint8_t *new_key)
+{
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof policy);
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type  = ssrc_specific;
+    policy.ssrc.value = ssrc;
+    policy.key        = (uint8_t *)new_key;  /* caller keeps buffer alive */
+    policy.next       = NULL;
+
+    srtp_err_status_t st = srtp_stream_update(session, &policy);
+    if (st != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_stream_update failed: %d\n", st);
+    }
+}
+```
+
+## User data: per-session context
+
+libSRTP lets you attach an arbitrary pointer to each session. This is especially useful for retrieving application state inside the global event handler.
+
+```c
+void  srtp_set_user_data(srtp_t ctx, void *data);
+void *srtp_get_user_data(srtp_t ctx);
+```
+
+```c
+my_app_ctx_t app_ctx = {
+    .rekey_needed    = false,
+    .new_policy_ready = false,
+};
+
+srtp_t session;
+srtp_create(&session, &policy);
+srtp_set_user_data(session, &app_ctx);
+
+/* Later, inside the event handler: */
+my_app_ctx_t *p = (my_app_ctx_t *)srtp_get_user_data(data->session);
+```
+
+## Log handler
+
+libSRTP can route internal log messages to your application. Register a handler with:
+
+```c
+srtp_err_status_t srtp_install_log_handler(srtp_log_handler_func_t func,
+                                           void *data);
+```
+
+The prototype for the log handler:
+
+```c
+typedef void(srtp_log_handler_func_t)(srtp_log_level_t level,
+                                      const char *msg,
+                                      void *data);
+```
+
+Log levels:
+
+```c
+typedef enum {
+    srtp_log_level_error,   /* error condition                  */
+    srtp_log_level_warning, /* warning, non-fatal               */
+    srtp_log_level_info,    /* informational                    */
+    srtp_log_level_debug    /* verbose debugging                */
+} srtp_log_level_t;
+```
+
+### Example log handler
+
+```c
+static void my_log_handler(srtp_log_level_t level,
+                            const char *msg,
+                            void *data)
+{
+    const char *prefix;
+    switch (level) {
+    case srtp_log_level_error:   prefix = "[SRTP ERROR]";   break;
+    case srtp_log_level_warning: prefix = "[SRTP WARNING]"; break;
+    case srtp_log_level_info:    prefix = "[SRTP INFO]";    break;
+    case srtp_log_level_debug:   prefix = "[SRTP DEBUG]";   break;
+    default:                     prefix = "[SRTP]";         break;
+    }
+    fprintf(stderr, "%s %s\n", prefix, msg);
+}
+
+/* Install BEFORE srtp_init() to capture startup messages */
+srtp_install_log_handler(my_log_handler, NULL);
+srtp_init();
+```
+
+<Note>
+  `srtp_install_log_handler()` may be called before `srtp_init()`. This allows you to capture any log messages emitted during library initialisation.
+</Note>
+
+## Debug modules
+
+libSRTP has an internal per-module debug logging system, independent of the log handler above.
+
+```c
+/* List all available debug modules */
+srtp_list_debug_modules();
+
+/* Enable debug output for a specific module */
+srtp_set_debug_module("srtp", true);
+
+/* Disable it */
+srtp_set_debug_module("srtp", false);
+```
+
+Debug output goes to the log handler if one is installed, or to stdout if `--enable-log-stdout` was used at build time.
+
+## Complete example
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include "srtp.h"
+
+typedef struct {
+    bool     rekey_needed;
+    uint32_t rekey_ssrc;
+} app_ctx_t;
+
+/* ------------------------------------------------------------------ */
+static void log_handler(srtp_log_level_t level, const char *msg, void *data)
+{
+    (void)data;
+    if (level <= srtp_log_level_warning)
+        fprintf(stderr, "[srtp] %s\n", msg);
+}
+
+/* ------------------------------------------------------------------ */
+static void event_handler(srtp_event_data_t *ev)
+{
+    app_ctx_t *ctx = (app_ctx_t *)srtp_get_user_data(ev->session);
+
+    switch (ev->event) {
+    case event_ssrc_collision:
+        fprintf(stderr, "SSRC collision: 0x%08x removed\n", ev->ssrc);
+        srtp_stream_remove(ev->session, ev->ssrc);
+        break;
+
+    case event_key_soft_limit:
+        fprintf(stderr, "Key soft limit for SSRC 0x%08x\n", ev->ssrc);
+        if (ctx) { ctx->rekey_needed = true; ctx->rekey_ssrc = ev->ssrc; }
+        break;
+
+    case event_key_hard_limit:
+        fprintf(stderr, "Key hard limit for SSRC 0x%08x\n", ev->ssrc);
+        /* In production: load a new key and call srtp_stream_update() here */
+        break;
+
+    case event_packet_index_limit:
+        fprintf(stderr, "Packet index limit for SSRC 0x%08x\n", ev->ssrc);
+        srtp_stream_remove(ev->session, ev->ssrc);
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+int main(void)
+{
+    /* Install log and event handlers before srtp_init() */
+    srtp_install_log_handler(log_handler, NULL);
+    srtp_install_event_handler(event_handler);
+
+    if (srtp_init() != srtp_err_status_ok) {
+        fputs("srtp_init failed\n", stderr);
+        return 1;
+    }
+
+    uint8_t key[SRTP_AES_ICM_128_KEY_LEN_WSALT] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e
+    };
+
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof policy);
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type = ssrc_any_outbound;
+    policy.key       = key;
+    policy.next      = NULL;
+
+    srtp_t session;
+    if (srtp_create(&session, &policy) != srtp_err_status_ok) {
+        fputs("srtp_create failed\n", stderr);
+        return 1;
+    }
+
+    /* Attach application context so the event handler can access it */
+    app_ctx_t ctx = { .rekey_needed = false, .rekey_ssrc = 0 };
+    srtp_set_user_data(session, &ctx);
+
+    /* ... normal protect/unprotect loop ... */
+
+    srtp_dealloc(session);
+    srtp_shutdown();
+    return 0;
+}
+```
+
+## Version string
+
+Use `srtp_get_version_string()` to log the active libSRTP version and (where applicable) the crypto backend at startup:
+
+```c
+printf("libSRTP version: %s\n", srtp_get_version_string());
+```
+
+This is also useful to verify that the correct crypto backend was linked. See [Crypto backends](/guides/crypto-backends) for details.

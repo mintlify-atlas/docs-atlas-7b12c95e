@@ -1,0 +1,326 @@
+---
+title: 'Session creation'
+description: 'Allocate and initialize SRTP sessions, configure crypto policies, and perform key rotation with srtp_create() and srtp_update().'
+keywords: ['srtp_create', 'srtp_update', 'srtp_policy_t', 'session', 'policy', 'key rotation', 'MKI']
+---
+
+Functions for allocating and configuring SRTP sessions. A session is an opaque `srtp_t` handle associated with one or more streams, each governed by an `srtp_policy_t`.
+
+---
+
+## srtp_create
+
+```c
+srtp_err_status_t srtp_create(srtp_t *session, const srtp_policy_t *policy);
+```
+
+Allocates and initializes an SRTP session context, then applies the given policy. On success, `*session` is set to the new session handle that you pass to subsequent calls such as `srtp_protect()` and `srtp_dealloc()`.
+
+<ParamField path="session" type="srtp_t *" required>
+  Output pointer that receives the newly allocated session handle. Must not be NULL. On failure, the value of `*session` is undefined.
+</ParamField>
+
+<ParamField path="policy" type="const srtp_policy_t *">
+  Pointer to the policy (or head of a linked list of policies) to apply to the session. Pass `NULL` to create an empty session and add streams later with `srtp_stream_add()`. The final element in a linked list **must** have its `next` field set to `NULL`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="srtp_err_status_ok" type="srtp_err_status_t">
+  The session was created and the policy was applied successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_alloc_fail" type="srtp_err_status_t">
+  Memory allocation for the session or its internal structures failed.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_init_fail" type="srtp_err_status_t">
+  One or more cryptographic components for the session could not be initialized.
+</ResponseField>
+
+### The srtp_policy_t struct
+
+Each `srtp_policy_t` element describes the security policy for a single SRTP stream within the session.
+
+```c
+typedef struct srtp_policy_t {
+    srtp_ssrc_t          ssrc;
+    srtp_crypto_policy_t rtp;
+    srtp_crypto_policy_t rtcp;
+    uint8_t             *key;
+    srtp_master_key_t  **keys;
+    size_t               num_master_keys;
+    bool                 use_mki;
+    size_t               mki_size;
+    size_t               window_size;
+    bool                 allow_repeat_tx;
+    uint8_t             *enc_xtn_hdr;
+    size_t               enc_xtn_hdr_count;
+    bool                 use_cryptex;
+    struct srtp_policy_t *next;
+} srtp_policy_t;
+```
+
+<Expandable title="srtp_policy_t fields">
+
+<ResponseField name="ssrc" type="srtp_ssrc_t" required>
+  Identifies which SRTP stream this policy applies to. The `srtp_ssrc_t` struct has two members:
+
+  - **`type`** (`srtp_ssrc_type_t`): one of:
+    - `ssrc_specific` — match a single SSRC given in `value`.
+    - `ssrc_any_outbound` — match any outbound SSRC not covered by a more specific policy.
+    - `ssrc_any_inbound` — match any inbound SSRC not covered by a more specific policy.
+  - **`value`** (`uint32_t`): the SSRC value to match, in host byte order. Ignored unless `type` is `ssrc_specific`.
+
+  Wildcard SSRCs (`ssrc_any_inbound` / `ssrc_any_outbound`) cannot be mixed in a single wildcard that covers both directions.
+</ResponseField>
+
+<ResponseField name="rtp" type="srtp_crypto_policy_t" required>
+  Cryptographic policy applied to RTP packets in this stream. Use a convenience function such as `srtp_crypto_policy_set_rtp_default()` to populate this field with the RFC 3711 default (AES-128-CM + HMAC-SHA1-80).
+</ResponseField>
+
+<ResponseField name="rtcp" type="srtp_crypto_policy_t" required>
+  Cryptographic policy applied to RTCP packets in this stream. Use `srtp_crypto_policy_set_rtcp_default()` to populate this field.
+</ResponseField>
+
+<ResponseField name="key" type="uint8_t *">
+  Pointer to the SRTP master key (key bytes immediately followed by salt bytes) for this stream. The required length depends on the cipher selected in `rtp`. For the default AES-128-CM policy this is 30 bytes (`SRTP_MASTER_KEY_LEN`). Set to `NULL` when using `keys` / `num_master_keys` instead.
+</ResponseField>
+
+<ResponseField name="keys" type="srtp_master_key_t **">
+  Array of pointers to `srtp_master_key_t` structures used when MKI (Master Key Index) is enabled. Each entry holds a `key` pointer and an `mki_id` pointer identifying which key to use. Use this field together with `num_master_keys`, `use_mki`, and `mki_size` instead of the single `key` field.
+</ResponseField>
+
+<ResponseField name="num_master_keys" type="size_t">
+  Number of entries in the `keys` array. Valid values are 1 through `SRTP_MAX_NUM_MASTER_KEYS` (16). Ignored when `use_mki` is `false`.
+</ResponseField>
+
+<ResponseField name="use_mki" type="bool" default="false">
+  When `true`, MKI is used and the library selects the session key based on the MKI present in incoming packets or the `mki_index` argument to `srtp_protect()`. When `false`, the single `key` field is used and MKI processing is disabled.
+</ResponseField>
+
+<ResponseField name="mki_size" type="size_t">
+  Size in bytes of the MKI field in SRTP/SRTCP packets when `use_mki` is `true`. Maximum value is `SRTP_MAX_MKI_LEN` (128).
+</ResponseField>
+
+<ResponseField name="window_size" type="size_t" default="128">
+  Size of the replay-protection window in packets. A value of `0` causes libSRTP to use the default window of 128 packets. Larger values increase protection against out-of-order delivery at the cost of additional memory.
+</ResponseField>
+
+<ResponseField name="allow_repeat_tx" type="bool" default="false">
+  When `true`, the library permits retransmission of packets with the same RTP sequence number. This is required for protocols that retransmit unacknowledged packets (e.g., certain RTCP feedback mechanisms).
+
+  <Warning>
+    Enabling `allow_repeat_tx` is only safe when retransmitted packets carry **identical** payloads. Reusing a sequence number with different content is a serious cryptographic weakness.
+  </Warning>
+</ResponseField>
+
+<ResponseField name="enc_xtn_hdr" type="uint8_t *">
+  Pointer to an array of one-byte RTP header extension IDs whose contents should be encrypted (RFC 6904). Set to `NULL` to disable per-extension encryption.
+</ResponseField>
+
+<ResponseField name="enc_xtn_hdr_count" type="size_t">
+  Number of entries in the `enc_xtn_hdr` array.
+</ResponseField>
+
+<ResponseField name="use_cryptex" type="bool" default="false">
+  When `true`, enables Cryptex (RFC 9335), which encrypts the RTP header extension block and the CSRC list in addition to the payload.
+</ResponseField>
+
+<ResponseField name="next" type="struct srtp_policy_t *" default="NULL">
+  Pointer to the next policy in a linked list, or `NULL` if this is the last (or only) element. **The final element must always be `NULL`.**
+</ResponseField>
+
+</Expandable>
+
+### Example: single-stream outbound session
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+/* 30-byte master key+salt for AES-128-CM / HMAC-SHA1-80 */
+static uint8_t master_key[SRTP_MASTER_KEY_LEN] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, /* key (16 bytes) */
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d              /* salt (14 bytes) */
+};
+
+srtp_t create_outbound_session(void) {
+    srtp_policy_t policy;
+    srtp_t session;
+    srtp_err_status_t status;
+
+    memset(&policy, 0, sizeof(policy));
+
+    /* Use RFC 3711 default crypto for RTP and RTCP */
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+    /* Match any outbound SSRC (wildcard) */
+    policy.ssrc.type = ssrc_any_outbound;
+
+    /* Set the master key */
+    policy.key  = master_key;
+    policy.next = NULL;
+
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        return NULL;
+    }
+
+    return session;
+}
+```
+
+### Example: multi-stream session with linked policies
+
+Use a linked list of `srtp_policy_t` structs to configure separate keys for specific SSRCs.
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+static uint8_t key_a[SRTP_MASTER_KEY_LEN]; /* key for SSRC 0xDEADBEEF */
+static uint8_t key_b[SRTP_MASTER_KEY_LEN]; /* key for SSRC 0xCAFEBABE */
+
+srtp_t create_multistream_session(void) {
+    srtp_policy_t policy_a, policy_b;
+    srtp_t session;
+    srtp_err_status_t status;
+
+    /* Policy for the first stream */
+    memset(&policy_a, 0, sizeof(policy_a));
+    srtp_crypto_policy_set_rtp_default(&policy_a.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy_a.rtcp);
+    policy_a.ssrc.type  = ssrc_specific;
+    policy_a.ssrc.value = 0xDEADBEEF;
+    policy_a.key        = key_a;
+    policy_a.next       = &policy_b; /* link to next policy */
+
+    /* Policy for the second stream — must have next = NULL */
+    memset(&policy_b, 0, sizeof(policy_b));
+    srtp_crypto_policy_set_rtp_default(&policy_b.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy_b.rtcp);
+    policy_b.ssrc.type  = ssrc_specific;
+    policy_b.ssrc.value = 0xCAFEBABE;
+    policy_b.key        = key_b;
+    policy_b.next       = NULL; /* end of list */
+
+    /* Pass the head of the linked list */
+    status = srtp_create(&session, &policy_a);
+    if (status != srtp_err_status_ok) {
+        return NULL;
+    }
+
+    return session;
+}
+```
+
+### Example: session with MKI
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+static uint8_t key1[SRTP_MASTER_KEY_LEN];
+static uint8_t key2[SRTP_MASTER_KEY_LEN];
+static uint8_t mki1_id[4] = { 0x00, 0x00, 0x00, 0x01 };
+static uint8_t mki2_id[4] = { 0x00, 0x00, 0x00, 0x02 };
+
+srtp_t create_mki_session(void) {
+    srtp_master_key_t mk1 = { .key = key1, .mki_id = mki1_id };
+    srtp_master_key_t mk2 = { .key = key2, .mki_id = mki2_id };
+    srtp_master_key_t *master_keys[2] = { &mk1, &mk2 };
+
+    srtp_policy_t policy;
+    srtp_t session;
+    srtp_err_status_t status;
+
+    memset(&policy, 0, sizeof(policy));
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type     = ssrc_any_outbound;
+    policy.keys          = master_keys;
+    policy.num_master_keys = 2;
+    policy.use_mki       = true;
+    policy.mki_size      = 4;       /* 4-byte MKI field */
+    policy.next          = NULL;
+
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        return NULL;
+    }
+
+    return session;
+}
+```
+
+<Tip>
+  Initialize all `srtp_policy_t` fields to zero with `memset()` before setting individual fields. This ensures that new fields added in future libSRTP releases do not receive garbage values.
+</Tip>
+
+---
+
+## srtp_update
+
+```c
+srtp_err_status_t srtp_update(srtp_t session, const srtp_policy_t *policy);
+```
+
+Updates all streams in an existing session with a new policy, typically used for key rotation. The rollover counter (ROC) of each affected stream is preserved, so sequence numbering is not reset.
+
+<ParamField path="session" type="srtp_t" required>
+  The session to update. Must be a valid handle returned by `srtp_create()`.
+</ParamField>
+
+<ParamField path="policy" type="const srtp_policy_t *" required>
+  New policy (or head of a linked list of policies) to apply. The final element **must** have its `next` field set to `NULL`.
+</ParamField>
+
+<Note>
+  `srtp_update()` matches streams by SSRC. Streams present in the session but not referenced by the new policy are left unchanged. Use `srtp_stream_update()` to target a single stream by SSRC.
+</Note>
+
+### Returns
+
+<ResponseField name="srtp_err_status_ok" type="srtp_err_status_t">
+  All matched streams were updated successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_alloc_fail" type="srtp_err_status_t">
+  Memory allocation failed during the update.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_init_fail" type="srtp_err_status_t">
+  Initialization of one or more cryptographic components failed.
+</ResponseField>
+
+### Example: key rotation
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+
+/* Called when the application receives new keying material */
+int rotate_key(srtp_t session, const uint8_t *new_key) {
+    srtp_policy_t policy;
+    srtp_err_status_t status;
+
+    memset(&policy, 0, sizeof(policy));
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type = ssrc_any_outbound;
+    policy.key       = (uint8_t *)new_key; /* new master key+salt */
+    policy.next      = NULL;
+
+    status = srtp_update(session, &policy);
+    if (status != srtp_err_status_ok) {
+        return -1;
+    }
+
+    /* ROC is preserved — sequence numbers continue from where they left off */
+    return 0;
+}
+```

@@ -1,0 +1,298 @@
+---
+title: 'Protecting RTCP'
+description: 'How to protect outbound RTCP packets with srtp_protect_rtcp() and verify inbound packets with srtp_unprotect_rtcp() using the same SRTP session.'
+keywords: ['srtcp', 'rtcp', 'protect', 'unprotect', 'srtp_protect_rtcp', 'srtp_unprotect_rtcp', 'SRTCP index']
+---
+
+RTCP (Real-time Control Protocol) carries statistics, sender reports, and receiver reports alongside RTP media. Because RTCP contains information about packet loss and jitter it can be used to infer session quality even without decrypting the media; therefore SRTP protects RTCP as SRTCP.
+
+libSRTP uses the same session context for both RTP and RTCP traffic. The policy you define in `srtp_policy_t` contains separate `rtp` and `rtcp` crypto fields, and the same call to `srtp_create()` establishes protection for both protocols.
+
+## How SRTCP differs from SRTP
+
+| Property | SRTP | SRTCP |
+|---|---|---|
+| Protect function | `srtp_protect()` | `srtp_protect_rtcp()` |
+| Unprotect function | `srtp_unprotect()` | `srtp_unprotect_rtcp()` |
+| Trailer components | auth tag + MKI | SRTCP index (4 bytes) + auth tag + MKI |
+| Max trailer constant | `SRTP_MAX_TRAILER_LEN` | `SRTP_MAX_SRTCP_TRAILER_LEN` |
+| Replay window | Configurable | Hardcoded 128 bits |
+| Packet index | 48-bit extended sequence number | 31-bit SRTCP index |
+
+The SRTCP trailer prepends a 4-byte **SRTCP index** field before the authentication tag. Bit 31 of that field is the **E bit** (`SRTCP_E_BIT = 0x80000000`), which is set when the payload is encrypted.
+
+## SRTCP trailer layout
+
+```
++------------------+-------------------+-----+
+| RTCP payload     | SRTCP index (4 B) | tag |
++------------------+-------------------+-----+
+                    ^-- E bit is bit 31
+```
+
+The maximum bytes added by `srtp_protect_rtcp()` are:
+
+```c
+/* SRTP_SRCTP_INDEX_LEN (4) + SRTP_MAX_TAG_LEN (16) + SRTP_MAX_MKI_LEN (128) */
+#define SRTP_MAX_SRTCP_TRAILER_LEN \
+    (SRTP_SRCTP_INDEX_LEN + SRTP_MAX_TAG_LEN + SRTP_MAX_MKI_LEN)
+```
+
+## Session setup
+
+The same policy and session used for RTP protection also covers RTCP. Both `policy.rtp` and `policy.rtcp` must be initialised.
+
+```c
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(srtp_policy_t));
+
+/* SRTP default: AES-128-ICM + HMAC-SHA1-80 */
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+/* SRTCP default: AES-128-ICM + HMAC-SHA1-80 with 80-bit tag */
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+policy.ssrc.type = ssrc_any_outbound;
+policy.key       = key;  /* shared master key for both RTP and RTCP */
+policy.next      = NULL;
+
+srtp_t session;
+srtp_err_status_t status = srtp_create(&session, &policy);
+```
+
+<Note>
+  The SRTCP default policy uses a 80-bit authentication tag. Using a short 32-bit tag (as available for SRTP via `srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32()`) is NOT recommended for SRTCP; see RFC 3711 §7.5.
+</Note>
+
+## Sender-side: srtp_protect_rtcp()
+
+```c
+srtp_err_status_t srtp_protect_rtcp(srtp_t ctx,
+                                     const uint8_t *rtcp,
+                                     size_t rtcp_len,
+                                     uint8_t *srtcp,
+                                     size_t *srtcp_len,
+                                     size_t mki_index);
+```
+
+Reads the plain RTCP packet from `rtcp`, applies SRTCP protection, and writes the result to `srtcp`. Pass `srtcp == rtcp` for in-place processing.
+
+### Buffer sizing
+
+<CodeGroup>
+
+```c safe upper bound
+uint8_t srtcp_buf[RTCP_BUF_MAX + SRTP_MAX_SRTCP_TRAILER_LEN];
+size_t  srtcp_len = sizeof(srtcp_buf);
+```
+
+```c exact size query
+size_t trailer_len;
+srtp_err_status_t st =
+    srtp_get_protect_rtcp_trailer_length(session, mki_index, &trailer_len);
+if (st != srtp_err_status_ok) { /* handle */ }
+
+uint8_t *srtcp_buf = malloc(rtcp_len + trailer_len);
+size_t   srtcp_len = rtcp_len + trailer_len;
+```
+
+</CodeGroup>
+
+### Sending an RTCP packet
+
+```c
+/* rtcp_buf contains a valid RTCP packet of rtcp_len bytes, 32-bit aligned */
+uint8_t srtcp_buf[1024 + SRTP_MAX_SRTCP_TRAILER_LEN];
+size_t  srtcp_len = sizeof(srtcp_buf);
+
+srtp_err_status_t status =
+    srtp_protect_rtcp(session, rtcp_buf, rtcp_len,
+                      srtcp_buf, &srtcp_len, 0);
+
+switch (status) {
+case srtp_err_status_ok:
+    send(rtcp_sock, srtcp_buf, srtcp_len, 0);
+    break;
+case srtp_err_status_buffer_small:
+    fprintf(stderr, "srtp_protect_rtcp: output buffer too small\n");
+    break;
+default:
+    fprintf(stderr, "srtp_protect_rtcp: error %d\n", status);
+    break;
+}
+```
+
+<Warning>
+  Unlike SRTP, the SRTCP index is maintained internally and increments automatically on each call to `srtp_protect_rtcp()`. You do not set it explicitly. The replay window for SRTCP is hardcoded to 128 bits and cannot be changed via the policy.
+</Warning>
+
+## Receiver-side: srtp_unprotect_rtcp()
+
+```c
+srtp_err_status_t srtp_unprotect_rtcp(srtp_t ctx,
+                                       const uint8_t *srtcp,
+                                       size_t srtcp_len,
+                                       uint8_t *rtcp,
+                                       size_t *rtcp_len);
+```
+
+Verifies the authentication tag and decrypts the RTCP payload. On success `*rtcp_len` contains the length of the recovered RTCP packet.
+
+### Receiving an RTCP packet
+
+```c
+uint8_t recv_buf[4096];
+ssize_t n = recv(rtcp_sock, recv_buf, sizeof(recv_buf), 0);
+if (n <= 0) { /* handle error */ }
+
+uint8_t rtcp_buf[4096];
+size_t  rtcp_len = sizeof(rtcp_buf);
+
+srtp_err_status_t status =
+    srtp_unprotect_rtcp(session, recv_buf, (size_t)n,
+                        rtcp_buf, &rtcp_len);
+
+switch (status) {
+case srtp_err_status_ok:
+    process_rtcp(rtcp_buf, rtcp_len);
+    break;
+case srtp_err_status_auth_fail:
+    /* Authentication failed — discard */
+    break;
+case srtp_err_status_replay_fail:
+case srtp_err_status_replay_old:
+    /* Replayed or out-of-window — discard */
+    break;
+case srtp_err_status_bad_mki:
+    fprintf(stderr, "srtp_unprotect_rtcp: unknown MKI\n");
+    break;
+default:
+    fprintf(stderr, "srtp_unprotect_rtcp: error %d\n", status);
+    break;
+}
+```
+
+## SRTCP_E_BIT
+
+The `SRTCP_E_BIT` constant (`0x80000000`) marks whether the RTCP payload is encrypted in the SRTCP index word. When `sec_serv_conf` is not set in the policy, the payload is sent in the clear and the E bit is 0. In the default policy both confidentiality and authentication are enabled (`sec_serv_conf_and_auth`), so the E bit is always set.
+
+```c
+/* Excerpt from srtp.h — defined in host byte order */
+#define SRTCP_E_BIT      0x80000000
+#define SRTCP_E_BYTE_BIT 0x80
+#define SRTCP_INDEX_MASK 0x7fffffff
+```
+
+## RTCP-only sessions
+
+If you need to protect RTCP but not RTP (unusual), set only the RTCP crypto policy. The `rtp` policy field is still present in the struct; setting it to `srtp_crypto_policy_set_null_cipher_hmac_null()` effectively disables it:
+
+```c
+srtp_crypto_policy_set_null_cipher_hmac_null(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+```
+
+<Warning>
+  Disabling SRTP protection for RTP while protecting RTCP is non-standard and provides only partial security. Use the defaults unless you have a specific interoperability requirement.
+</Warning>
+
+## MKI with RTCP
+
+MKI works identically for RTCP: pass the desired `mki_index` to `srtp_protect_rtcp()`. `srtp_unprotect_rtcp()` reads the MKI from the packet automatically.
+
+```c
+/* Protect using key at index 0 */
+srtp_protect_rtcp(session, rtcp, rtcp_len, srtcp, &srtcp_len, 0);
+```
+
+## Complete example: RTP and RTCP in one session
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "srtp.h"
+
+/* Minimal RTCP Sender Report header (no report blocks, no padding) */
+static size_t make_rtcp_sr(uint8_t *buf, uint32_t ssrc)
+{
+    /* V=2, P=0, RC=0, PT=200 (SR), length=6 (28 bytes / 4 - 1) */
+    buf[0]  = 0x80;
+    buf[1]  = 0xc8;   /* PT = 200 */
+    buf[2]  = 0x00;
+    buf[3]  = 0x06;   /* length in 32-bit words minus 1 */
+    buf[4]  = (uint8_t)(ssrc >> 24);
+    buf[5]  = (uint8_t)(ssrc >> 16);
+    buf[6]  = (uint8_t)(ssrc >>  8);
+    buf[7]  = (uint8_t)(ssrc);
+    memset(buf + 8, 0, 20);   /* NTP, RTP timestamp, packet count, octet count */
+    return 28;
+}
+
+int main(void)
+{
+    if (srtp_init() != srtp_err_status_ok) {
+        fputs("srtp_init failed\n", stderr);
+        return 1;
+    }
+
+    uint8_t key[SRTP_AES_ICM_128_KEY_LEN_WSALT] = {
+        0xa0, 0xe5, 0x31, 0x12, 0x8b, 0x6f, 0x52, 0x0e,
+        0xdf, 0x57, 0x50, 0xa9, 0x8d, 0xb7, 0x8c, 0xfe,
+        0x8d, 0x2d, 0xa5, 0x21, 0x78, 0x62, 0x98, 0x52,
+        0xf8, 0x2a, 0x8c, 0x47, 0xce, 0x73
+    };
+
+    /* Single policy covers both RTP and RTCP */
+    srtp_policy_t tx_policy;
+    memset(&tx_policy, 0, sizeof tx_policy);
+    srtp_crypto_policy_set_rtp_default(&tx_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&tx_policy.rtcp);
+    tx_policy.ssrc.type = ssrc_any_outbound;
+    tx_policy.key       = key;
+    tx_policy.next      = NULL;
+
+    srtp_policy_t rx_policy;
+    memset(&rx_policy, 0, sizeof rx_policy);
+    srtp_crypto_policy_set_rtp_default(&rx_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&rx_policy.rtcp);
+    rx_policy.ssrc.type = ssrc_any_inbound;
+    rx_policy.key       = key;
+    rx_policy.next      = NULL;
+
+    srtp_t tx_session, rx_session;
+    if (srtp_create(&tx_session, &tx_policy) != srtp_err_status_ok ||
+        srtp_create(&rx_session, &rx_policy) != srtp_err_status_ok) {
+        fputs("srtp_create failed\n", stderr);
+        return 1;
+    }
+
+    /* --- Protect RTCP sender report --- */
+    uint8_t rtcp_pkt[256 + SRTP_MAX_SRTCP_TRAILER_LEN];
+    size_t  rtcp_len = make_rtcp_sr(rtcp_pkt, 0xcafebabe);
+    size_t  srtcp_len = sizeof(rtcp_pkt);
+
+    if (srtp_protect_rtcp(tx_session, rtcp_pkt, rtcp_len,
+                          rtcp_pkt, &srtcp_len, 0) != srtp_err_status_ok) {
+        fputs("srtp_protect_rtcp failed\n", stderr);
+        return 1;
+    }
+    printf("RTCP: %zu bytes -> SRTCP: %zu bytes\n", rtcp_len, srtcp_len);
+
+    /* --- Unprotect on receiver side --- */
+    uint8_t rx_rtcp[256 + SRTP_MAX_SRTCP_TRAILER_LEN];
+    memcpy(rx_rtcp, rtcp_pkt, srtcp_len);
+    size_t  rx_rtcp_len = sizeof(rx_rtcp);
+
+    if (srtp_unprotect_rtcp(rx_session, rx_rtcp, srtcp_len,
+                            rx_rtcp, &rx_rtcp_len) != srtp_err_status_ok) {
+        fputs("srtp_unprotect_rtcp failed\n", stderr);
+        return 1;
+    }
+    printf("SRTCP: %zu bytes -> RTCP: %zu bytes\n", srtcp_len, rx_rtcp_len);
+
+    srtp_dealloc(tx_session);
+    srtp_dealloc(rx_session);
+    srtp_shutdown();
+    return 0;
+}
+```

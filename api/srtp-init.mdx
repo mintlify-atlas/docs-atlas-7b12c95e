@@ -1,0 +1,212 @@
+---
+title: 'Library initialization'
+description: 'Initialize and shut down the libSRTP cryptographic kernel, and query the library version.'
+keywords: ['srtp_init', 'srtp_shutdown', 'srtp_get_version', 'srtp_get_version_string', 'initialization', 'lifecycle']
+---
+
+Functions for managing the libSRTP library lifecycle. You must call `srtp_init()` before any other libSRTP function, and `srtp_shutdown()` after all sessions have been deallocated.
+
+---
+
+## srtp_init
+
+```c
+srtp_err_status_t srtp_init(void);
+```
+
+Initializes the libSRTP cryptographic kernel. This function must be called once before any other libSRTP function is used.
+
+Internally, `srtp_init()` sets up the cryptographic primitives (ciphers, authentication functions, and the pseudo-random number generator), installs the default event handler, and prepares internal data structures used by all subsequent SRTP operations.
+
+<Warning>
+  This function **must** be called before any other libSRTP function, including `srtp_create()`. Calling other functions before `srtp_init()` results in undefined behavior.
+</Warning>
+
+<Note>
+  libSRTP is not thread-safe with respect to initialization. Call `srtp_init()` from a single thread before spawning additional threads that use the library.
+</Note>
+
+### Returns
+
+<ResponseField name="srtp_err_status_ok" type="srtp_err_status_t">
+  The library was initialized successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_init_fail" type="srtp_err_status_t">
+  Initialization of one or more cryptographic components failed. This typically indicates a build or platform configuration problem.
+</ResponseField>
+
+### Example
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+
+int main(void) {
+    srtp_err_status_t status;
+
+    /* Initialize the library before any other call */
+    status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_init() failed: %d\n", status);
+        return 1;
+    }
+
+    /* ... create sessions, protect/unprotect packets ... */
+
+    /* Shut down after all sessions are deallocated */
+    status = srtp_shutdown();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_shutdown() failed: %d\n", status);
+        return 1;
+    }
+
+    return 0;
+}
+```
+
+---
+
+## srtp_shutdown
+
+```c
+srtp_err_status_t srtp_shutdown(void);
+```
+
+De-initializes the libSRTP library, releasing all resources allocated during `srtp_init()`. No libSRTP functions may be called after `srtp_shutdown()` returns.
+
+<Warning>
+  All SRTP sessions must be deallocated with `srtp_dealloc()` **before** calling `srtp_shutdown()`. Calling `srtp_shutdown()` with active sessions results in undefined behavior.
+</Warning>
+
+<Warning>
+  No libSRTP function — including `srtp_init()` — may be called after `srtp_shutdown()` returns. Re-initialization in the same process is not supported.
+</Warning>
+
+### Returns
+
+<ResponseField name="srtp_err_status_ok" type="srtp_err_status_t">
+  The library was shut down successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_dealloc_fail" type="srtp_err_status_t">
+  One or more internal resources could not be released. This is uncommon and typically indicates a platform-level memory management issue.
+</ResponseField>
+
+---
+
+## srtp_get_version_string
+
+```c
+const char *srtp_get_version_string(void);
+```
+
+Returns a human-readable string identifying the libSRTP version, such as `"libSRTP 2.6.0"`. The string is statically allocated and must not be freed or modified by the caller.
+
+### Returns
+
+<ResponseField name="version string" type="const char *">
+  A null-terminated string containing the library name and version number. The pointer is valid for the lifetime of the process.
+</ResponseField>
+
+---
+
+## srtp_get_version
+
+```c
+unsigned int srtp_get_version(void);
+```
+
+Returns the numeric representation of the libSRTP version. The version is encoded as a single `unsigned int` in the format `(major << 24) | (minor << 16) | (micro << 8)`.
+
+### Returns
+
+<ResponseField name="version" type="unsigned int">
+  Encoded version number. Use bitmask operations to extract individual components.
+</ResponseField>
+
+### Example
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+
+void print_version(void) {
+    unsigned int v = srtp_get_version();
+    unsigned int major = (v >> 24) & 0xFF;
+    unsigned int minor = (v >> 16) & 0xFF;
+    unsigned int micro = (v >>  8) & 0xFF;
+
+    /* Human-readable string */
+    printf("Version string: %s\n", srtp_get_version_string());
+
+    /* Numeric components */
+    printf("Version numeric: %u.%u.%u\n", major, minor, micro);
+
+    /* Require at least version 2.4.0 at runtime */
+    if (v < (2u << 24 | 4u << 16)) {
+        fprintf(stderr, "libSRTP 2.4.0 or later is required\n");
+    }
+}
+```
+
+---
+
+## Full lifecycle example
+
+The following example shows the complete library lifecycle from initialization through shutdown.
+
+```c
+#include <srtp3/srtp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    srtp_err_status_t status;
+    srtp_t session;
+    srtp_policy_t policy;
+
+    /* Step 1: initialize the library */
+    status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "Failed to initialize libSRTP: %d\n", status);
+        return EXIT_FAILURE;
+    }
+
+    printf("Running %s\n", srtp_get_version_string());
+
+    /* Step 2: configure a policy with default AES-128/HMAC-SHA1-80 */
+    memset(&policy, 0, sizeof(policy));
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type  = ssrc_any_outbound;
+    policy.key        = /* pointer to 30-byte master key+salt */ NULL;
+    policy.next       = NULL;
+
+    /* Step 3: create a session */
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "Failed to create SRTP session: %d\n", status);
+        srtp_shutdown();
+        return EXIT_FAILURE;
+    }
+
+    /* Step 4: protect/unprotect packets (see protect/unprotect API) */
+
+    /* Step 5: deallocate the session */
+    status = srtp_dealloc(session);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "Failed to deallocate SRTP session: %d\n", status);
+    }
+
+    /* Step 6: shut down the library */
+    status = srtp_shutdown();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "Failed to shut down libSRTP: %d\n", status);
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+```

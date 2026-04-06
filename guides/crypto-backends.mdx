@@ -1,0 +1,309 @@
+---
+title: 'Crypto backends'
+description: 'How to configure which cryptographic library libSRTP uses at build time, and which algorithms each backend supports.'
+keywords: ['openssl', 'nss', 'mbedtls', 'wolfssl', 'crypto backend', 'aes-gcm', 'aes-192', 'libsrtp build']
+---
+
+libSRTP delegates all cryptographic work to a configurable backend. When no third-party backend is selected, a small built-in implementation is used. The choice of backend is made at **build time** and cannot be changed at runtime.
+
+## Built-in (internal) backend
+
+The internal backend ships with the library and requires no external dependencies. It implements:
+
+- AES-128 Counter Mode (ICM)
+- AES-256 Counter Mode (ICM)
+- HMAC-SHA1
+
+It does **not** support:
+
+- AES-192 in any mode
+- AES-GCM (any key size)
+
+<Warning>
+  The built-in backend is suitable for development and porting, but third-party backends are strongly recommended for production because they receive independent security review and are significantly faster on most platforms.
+</Warning>
+
+## Algorithm support by backend
+
+| Algorithm | Internal | OpenSSL | NSS | mbedTLS | wolfSSL |
+|---|:---:|:---:|:---:|:---:|:---:|
+| AES-128-ICM | Yes | Yes | Yes | Yes | Yes |
+| AES-192-ICM | No  | Yes | Yes | Yes | Yes |
+| AES-256-ICM | Yes | Yes | Yes | Yes | Yes |
+| AES-128-GCM | No  | Yes | Yes | Yes | Yes |
+| AES-192-GCM | No  | Yes | Yes | Yes | Yes |
+| AES-256-GCM | No  | Yes | Yes | Yes | Yes |
+| HMAC-SHA1   | Yes | Yes | Yes | Yes | Yes |
+| SRTP KDF    | No  | Optional | No | No | Yes |
+
+AES-GCM ciphers require a third-party backend. If you need AES-GCM (`srtp_crypto_policy_set_aes_gcm_128_16_auth()` or `srtp_crypto_policy_set_aes_gcm_256_16_auth()`) or AES-192, select OpenSSL, NSS, mbedTLS, or wolfSSL.
+
+## Build system reference
+
+libSRTP supports three build systems: **autotools**, **CMake**, and **Meson**. All three accept the same conceptual options, but with different syntax.
+
+<Tabs>
+  <Tab title="CMake">
+    CMake uses a single `-DCRYPTO_LIBRARY=<value>` option. Valid values are `openssl`, `nss`, `mbedtls`, `wolfssl`, and `internal`. The default is `openssl`.
+
+    ```bash
+    cmake -B build -DCRYPTO_LIBRARY=openssl
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="autotools">
+    Autotools uses `--with-crypto-library=<value>`. Valid values are `openssl`, `wolfssl`, `nss`, and `internal`.
+
+    ```bash
+    ./configure --with-crypto-library=openssl
+    make
+    ```
+  </Tab>
+  <Tab title="Meson">
+    Meson uses `-Dcrypto-library=<value>`. Valid values are `openssl`, `wolfssl`, `nss`, `mbedtls`, and `internal`.
+
+    ```bash
+    meson setup builddir -Dcrypto-library=openssl
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+## OpenSSL
+
+OpenSSL is the most widely used backend. It provides the complete algorithm set including AES-GCM and supports an optional SRTP-specific KDF.
+
+**Minimum version:** OpenSSL 1.1.0 (required since libSRTP 2.5.0).
+
+<Tabs>
+  <Tab title="CMake">
+    ```bash
+    # System OpenSSL
+    cmake -B build -DCRYPTO_LIBRARY=openssl
+    cmake --build build
+
+    # Custom OpenSSL installation
+    cmake -B build \
+      -DCRYPTO_LIBRARY=openssl \
+      -DOPENSSL_ROOT_DIR=/opt/openssl
+    cmake --build build
+
+    # Enable OpenSSL KDF (requires a fork of OpenSSL that supports kdf_srtp)
+    cmake -B build \
+      -DCRYPTO_LIBRARY=openssl \
+      -Dcrypto-library-kdf=enabled
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="autotools">
+    ```bash
+    # System OpenSSL
+    ./configure --with-crypto-library=openssl
+    make
+
+    # Custom OpenSSL installation
+    ./configure \
+      --with-crypto-library=openssl \
+      --with-openssl-dir=/opt/openssl
+    make
+
+    # Enable OpenSSL KDF
+    ./configure \
+      --with-crypto-library=openssl \
+      --enable-openssl-kdf
+    make
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    # System OpenSSL (located via pkg-config)
+    meson setup builddir -Dcrypto-library=openssl
+    meson compile -C builddir
+
+    # Enable OpenSSL KDF
+    meson setup builddir \
+      -Dcrypto-library=openssl \
+      -Dcrypto-library-kdf=enabled
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The OpenSSL KDF option (`--enable-openssl-kdf` / `-Dcrypto-library-kdf=enabled`) enables a SRTP-specific key derivation function available in certain OpenSSL forks. It is **not** present in upstream OpenSSL and is silently ignored if the symbol `kdf_srtp` is not found (CMake/Meson will error if it is explicitly enabled and not found).
+</Note>
+
+## NSS
+
+Mozilla's Network Security Services (NSS) provides the full algorithm set including AES-GCM. It has been supported since libSRTP 2.3.0.
+
+<Tabs>
+  <Tab title="CMake">
+    ```bash
+    # System NSS (located via pkg-config)
+    cmake -B build -DCRYPTO_LIBRARY=nss
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="autotools">
+    ```bash
+    # System NSS
+    ./configure --with-crypto-library=nss
+    make
+
+    # Custom NSS installation
+    ./configure \
+      --with-crypto-library=nss \
+      --with-nss-dir=/opt/nss
+    make
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson setup builddir -Dcrypto-library=nss
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+## mbedTLS
+
+mbedTLS (formerly PolarSSL) is a lightweight cryptographic library well suited to embedded targets. mbedTLS support was added in libSRTP 2.4.0.
+
+<Note>
+  The mbedTLS backend is not available via the autotools build system. Use CMake or Meson instead.
+</Note>
+
+<Tabs>
+  <Tab title="CMake">
+    ```bash
+    cmake -B build -DCRYPTO_LIBRARY=mbedtls
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson setup builddir -Dcrypto-library=mbedtls
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+## wolfSSL
+
+wolfSSL is a compact TLS library with a focus on embedded and FIPS-certified deployments. It provides the full algorithm set including AES-GCM and the SRTP KDF.
+
+<Tabs>
+  <Tab title="CMake">
+    ```bash
+    cmake -B build -DCRYPTO_LIBRARY=wolfssl
+    cmake --build build
+
+    # Custom wolfSSL installation
+    cmake -B build \
+      -DCRYPTO_LIBRARY=wolfssl \
+      -DwolfSSL_ROOT=/opt/wolfssl
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="autotools">
+    ```bash
+    ./configure --with-crypto-library=wolfssl
+    make
+
+    # Custom wolfSSL installation
+    ./configure \
+      --with-crypto-library=wolfssl \
+      --with-wolfssl-dir=/opt/wolfssl
+    make
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson setup builddir -Dcrypto-library=wolfssl
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+## Internal (no external dependency)
+
+Use the internal backend when you cannot link against any third-party library or when targeting a minimal embedded environment.
+
+<Tabs>
+  <Tab title="CMake">
+    ```bash
+    cmake -B build -DCRYPTO_LIBRARY=internal
+    cmake --build build
+    ```
+  </Tab>
+  <Tab title="autotools">
+    ```bash
+    ./configure --with-crypto-library=internal
+    make
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson setup builddir -Dcrypto-library=internal
+    meson compile -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+## Verifying the backend at runtime
+
+`srtp_get_version_string()` returns a human-readable string that identifies the library version. Log it at startup to confirm the expected backend was linked:
+
+```c
+#include <stdio.h>
+#include "srtp.h"
+
+int main(void)
+{
+    srtp_init();
+    printf("libSRTP: %s\n", srtp_get_version_string());
+    /* Example output:
+     *   libSRTP: libsrtp3 3.0.0 (openssl)
+     */
+    srtp_shutdown();
+    return 0;
+}
+```
+
+You can also retrieve the numeric version:
+
+```c
+unsigned int ver = srtp_get_version();
+unsigned int major = (ver >> 16) & 0xff;
+unsigned int minor = (ver >>  8) & 0xff;
+unsigned int patch = (ver      ) & 0xff;
+printf("libSRTP version: %u.%u.%u\n", major, minor, patch);
+```
+
+## Policy functions that require a third-party backend
+
+The following policy convenience functions are only available when a third-party backend is configured. Calling them with the internal backend will result in a `srtp_err_status_bad_param` or `srtp_err_status_fail` return from `srtp_create()`.
+
+<AccordionGroup>
+  <Accordion title="AES-192 ICM policies">
+    ```c
+    void srtp_crypto_policy_set_aes_cm_192_hmac_sha1_80(srtp_crypto_policy_t *p);
+    void srtp_crypto_policy_set_aes_cm_192_hmac_sha1_32(srtp_crypto_policy_t *p);
+    void srtp_crypto_policy_set_aes_cm_192_null_auth(srtp_crypto_policy_t *p);
+    ```
+    Require OpenSSL, NSS, mbedTLS, or wolfSSL.
+  </Accordion>
+
+  <Accordion title="AES-GCM policies">
+    ```c
+    void srtp_crypto_policy_set_aes_gcm_128_16_auth(srtp_crypto_policy_t *p);
+    void srtp_crypto_policy_set_aes_gcm_256_16_auth(srtp_crypto_policy_t *p);
+    ```
+    Require OpenSSL, NSS, mbedTLS, or wolfSSL. These policies also enable Cryptex (RFC 9335) support.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  There is no runtime API to query which algorithms the active backend supports. If your application needs AES-GCM or AES-192, enforce the correct backend at build time and log `srtp_get_version_string()` at startup to catch misconfigured deployments early.
+</Warning>

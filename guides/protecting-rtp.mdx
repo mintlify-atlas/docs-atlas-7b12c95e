@@ -1,0 +1,388 @@
+---
+title: 'Protecting RTP'
+description: 'How to encrypt and authenticate outbound RTP packets with srtp_protect(), and verify inbound packets with srtp_unprotect().'
+keywords: ['srtp', 'rtp', 'protect', 'unprotect', 'encryption', 'authentication', 'srtp_protect', 'srtp_unprotect']
+---
+
+SRTP (Secure Real-time Transport Protocol) adds encryption and message authentication to RTP streams. libSRTP exposes two functions for the data path: `srtp_protect()` on the sender side and `srtp_unprotect()` on the receiver side. Both operate on the same SRTP session context created with `srtp_create()`.
+
+## Session setup
+
+Before protecting any packets you must initialise the library and create a session.
+
+<Steps>
+  <Step title="Initialise the library">
+    Call `srtp_init()` once per process, before any other libSRTP call.
+
+    ```c
+    srtp_err_status_t status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_init() failed: %d\n", status);
+        return -1;
+    }
+    ```
+  </Step>
+
+  <Step title="Build the policy">
+    An `srtp_policy_t` describes the cryptographic profile, the master key, and the SSRC scope for one stream. Use the convenience functions to set defaults, then override fields as needed.
+
+    ```c
+    /* AES-128 Counter Mode + HMAC-SHA1-80 (RFC 3711 defaults) */
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof(srtp_policy_t));
+
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+    /* Outbound wildcard: applies to every SSRC we send */
+    policy.ssrc.type  = ssrc_any_outbound;
+    policy.ssrc.value = 0;
+
+    /* 30-byte master key+salt (SRTP_AES_ICM_128_KEY_LEN_WSALT = 16 + 14) */
+    uint8_t key[SRTP_AES_ICM_128_KEY_LEN_WSALT] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d
+    };
+    policy.key  = key;
+    policy.next = NULL;
+    ```
+
+    <Warning>
+      The key buffer pointed to by `policy.key` must remain valid for the lifetime of the SRTP session. libSRTP does not copy the key material during `srtp_create()`.
+    </Warning>
+  </Step>
+
+  <Step title="Create the session">
+    ```c
+    srtp_t session;
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_create() failed: %d\n", status);
+        return -1;
+    }
+    ```
+  </Step>
+</Steps>
+
+## Sender-side: srtp_protect()
+
+```c
+srtp_err_status_t srtp_protect(srtp_t ctx,
+                                const uint8_t *rtp,
+                                size_t rtp_len,
+                                uint8_t *srtp,
+                                size_t *srtp_len,
+                                size_t mki_index);
+```
+
+`srtp_protect()` reads a plain RTP packet from `rtp` and writes the protected SRTP packet to `srtp`. Pass `srtp == rtp` for in-place processing.
+
+### Buffer sizing
+
+libSRTP appends an authentication tag (and optionally an MKI field) after the RTP payload. You must allocate enough space in the output buffer before the call.
+
+<CodeGroup>
+
+```c safe upper bound
+/* Worst-case trailer: SRTP_MAX_TAG_LEN (16) + SRTP_MAX_MKI_LEN (128) */
+#define SRTP_MAX_TRAILER_LEN (SRTP_MAX_TAG_LEN + SRTP_MAX_MKI_LEN)
+
+uint8_t srtp_buf[RTP_BUF_MAX + SRTP_MAX_TRAILER_LEN];
+size_t  srtp_len = sizeof(srtp_buf);
+```
+
+```c exact size query
+/* Query the exact trailer length for the active key */
+size_t trailer_len;
+srtp_err_status_t st =
+    srtp_get_protect_trailer_length(session, mki_index, &trailer_len);
+if (st != srtp_err_status_ok) { /* handle error */ }
+
+uint8_t *srtp_buf = malloc(rtp_len + trailer_len);
+size_t   srtp_len = rtp_len + trailer_len;
+```
+
+</CodeGroup>
+
+<Warning>
+  If `*srtp_len` is smaller than the required output size, `srtp_protect()` returns `srtp_err_status_buffer_small` and the output buffer contents are undefined. Always pre-size the buffer correctly.
+</Warning>
+
+### Sending a packet
+
+```c
+/* rtp_buf contains a valid RTP packet of rtp_len bytes, aligned to 32 bits */
+uint8_t srtp_buf[2048 + SRTP_MAX_TRAILER_LEN];
+size_t  srtp_len = sizeof(srtp_buf);
+
+srtp_err_status_t status =
+    srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 0);
+
+switch (status) {
+case srtp_err_status_ok:
+    send(sock, srtp_buf, srtp_len, 0);
+    break;
+case srtp_err_status_replay_fail:
+    /* sequence number did not advance monotonically */
+    fprintf(stderr, "srtp_protect: replay failure\n");
+    break;
+case srtp_err_status_buffer_small:
+    fprintf(stderr, "srtp_protect: output buffer too small\n");
+    break;
+default:
+    fprintf(stderr, "srtp_protect: error %d\n", status);
+    break;
+}
+```
+
+### In-place vs. separate buffers
+
+`srtp` and `rtp` may point to the same buffer, in which case the SRTP trailer is appended in-place. The caller must still ensure the buffer is large enough to hold the original packet plus the trailer.
+
+```c
+/* In-place: rtp_buf must have SRTP_MAX_TRAILER_LEN bytes of headroom */
+uint8_t pkt[2048 + SRTP_MAX_TRAILER_LEN];
+size_t  rtp_len = build_rtp_packet(pkt);   /* fills [0..rtp_len) */
+size_t  out_len = sizeof(pkt);
+
+srtp_protect(session, pkt, rtp_len, pkt, &out_len, 0);
+/* pkt[0..out_len) now contains the SRTP packet */
+```
+
+## Receiver-side: srtp_unprotect()
+
+```c
+srtp_err_status_t srtp_unprotect(srtp_t ctx,
+                                  const uint8_t *srtp,
+                                  size_t srtp_len,
+                                  uint8_t *rtp,
+                                  size_t *rtp_len);
+```
+
+`srtp_unprotect()` verifies the authentication tag and decrypts the payload. On success `*rtp_len` contains the length of the recovered RTP packet.
+
+### Receiving a packet
+
+```c
+uint8_t recv_buf[4096];
+ssize_t n = recv(sock, recv_buf, sizeof(recv_buf), 0);
+if (n <= 0) { /* handle recv error */ }
+
+uint8_t rtp_buf[4096];
+size_t  rtp_len = sizeof(rtp_buf);
+
+srtp_err_status_t status =
+    srtp_unprotect(session, recv_buf, (size_t)n, rtp_buf, &rtp_len);
+
+switch (status) {
+case srtp_err_status_ok:
+    process_rtp(rtp_buf, rtp_len);
+    break;
+case srtp_err_status_auth_fail:
+    /* Packet failed authentication — discard silently */
+    break;
+case srtp_err_status_replay_fail:
+case srtp_err_status_replay_old:
+    /* Duplicate or out-of-window packet — discard */
+    break;
+case srtp_err_status_bad_mki:
+    /* MKI in packet does not match any known key */
+    fprintf(stderr, "srtp_unprotect: unknown MKI\n");
+    break;
+default:
+    fprintf(stderr, "srtp_unprotect: error %d\n", status);
+    break;
+}
+```
+
+<Warning>
+  Never process a packet for which `srtp_unprotect()` returned anything other than `srtp_err_status_ok`. Discarding authentication or replay failures silently (without acting on the data) is acceptable, but processing the plaintext from a failed call is a security risk.
+</Warning>
+
+## MKI (Master Key Indicator)
+
+When multiple master keys are in use, the MKI index selects which key is used to protect an outbound packet. Pass `mki_index = 0` when MKI is not in use (`use_mki = false` in the policy).
+
+```c
+/* Policy with two master keys */
+srtp_master_key_t key1 = { .key = key_material_1, .mki_id = mki_id_1 };
+srtp_master_key_t key2 = { .key = key_material_2, .mki_id = mki_id_2 };
+srtp_master_key_t *keys[2] = { &key1, &key2 };
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+policy.ssrc.type      = ssrc_any_outbound;
+policy.keys           = keys;
+policy.num_master_keys = 2;
+policy.use_mki        = true;
+policy.mki_size       = 4;   /* bytes per MKI field in the packet */
+policy.next           = NULL;
+
+/* Protect using key at index 1 */
+srtp_protect(session, rtp, rtp_len, srtp, &srtp_len, 1);
+```
+
+## Header extension encryption
+
+To encrypt specific RTP one-byte header extensions (RFC 5285), populate `enc_xtn_hdr` with the extension IDs to encrypt and set `enc_xtn_hdr_count`.
+
+```c
+/* Encrypt extensions with IDs 1 and 3 */
+uint8_t ext_ids[] = { 1, 3 };
+
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_rtp_default(&policy.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+policy.ssrc.type        = ssrc_any_outbound;
+policy.key              = key;
+policy.enc_xtn_hdr      = ext_ids;
+policy.enc_xtn_hdr_count = 2;
+policy.next             = NULL;
+```
+
+## Cryptex (RFC 9335)
+
+Cryptex encrypts the RTP header extension block and CSRC list. Enable it by setting `use_cryptex = true` in the policy. Cryptex requires a GCM cipher and is incompatible with the plain header extension encryption above.
+
+```c
+srtp_policy_t policy;
+memset(&policy, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_aes_gcm_128_16_auth(&policy.rtp);
+srtp_crypto_policy_set_aes_gcm_128_16_auth(&policy.rtcp);
+policy.ssrc.type   = ssrc_any_outbound;
+policy.key         = key;
+policy.use_cryptex = true;
+policy.next        = NULL;
+```
+
+<Note>
+  Cryptex requires a third-party crypto backend (OpenSSL, NSS, mbedTLS, or wolfSSL) because the built-in backend does not support AES-GCM. See [Crypto backends](/guides/crypto-backends) for build instructions.
+</Note>
+
+## Replay window
+
+libSRTP maintains a sliding replay window (default 128 packets) per stream. Packets whose sequence numbers fall outside the window are rejected with `srtp_err_status_replay_old`. You can adjust the window per-policy:
+
+```c
+policy.window_size = 512;  /* packets; 0 means use the default */
+```
+
+RTP sequence numbers need not be strictly consecutive, but they must not differ by more than 2^15 = 32,768 from the most recently accepted packet.
+
+## Allow retransmissions
+
+By default, a packet with the same sequence number as one already processed is rejected. If your application retransmits identical RTP packets (same payload), set `allow_repeat_tx`:
+
+```c
+policy.allow_repeat_tx = true;
+```
+
+<Warning>
+  `allow_repeat_tx` is only safe when retransmitted packets carry the **identical** payload. Retransmitting different payloads under the same sequence number with the same key is a serious cryptographic weakness.
+</Warning>
+
+## Teardown
+
+```c
+srtp_dealloc(session);
+srtp_shutdown();
+```
+
+## Complete example
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "srtp.h"
+
+/* Minimal RTP header (no payload) */
+static uint8_t make_rtp_packet(uint8_t *buf, uint16_t seq, uint32_t ssrc)
+{
+    buf[0]  = 0x80;                          /* V=2, no P, X, CC */
+    buf[1]  = 0x00;                          /* M=0, PT=0 */
+    buf[2]  = (uint8_t)(seq >> 8);
+    buf[3]  = (uint8_t)(seq);
+    memset(buf + 4, 0, 4);                   /* timestamp */
+    buf[8]  = (uint8_t)(ssrc >> 24);
+    buf[9]  = (uint8_t)(ssrc >> 16);
+    buf[10] = (uint8_t)(ssrc >>  8);
+    buf[11] = (uint8_t)(ssrc);
+    return 12;
+}
+
+int main(void)
+{
+    /* 1. Initialise library */
+    if (srtp_init() != srtp_err_status_ok) {
+        fputs("srtp_init failed\n", stderr);
+        return 1;
+    }
+
+    /* 2. Build policy — AES-128-ICM / HMAC-SHA1-80 */
+    uint8_t key[SRTP_AES_ICM_128_KEY_LEN_WSALT] = {
+        0xc8, 0x1e, 0x1c, 0x9e, 0xab, 0xb8, 0x69, 0x57,
+        0xb9, 0x38, 0x13, 0xa4, 0x8c, 0xd4, 0x4e, 0x3c,
+        0xab, 0x73, 0xef, 0x98, 0x38, 0x6d, 0xb5, 0x63,
+        0x8f, 0xc3, 0x2b, 0x36, 0xf5, 0xc1
+    };
+
+    srtp_policy_t tx_policy, rx_policy;
+    memset(&tx_policy, 0, sizeof tx_policy);
+    srtp_crypto_policy_set_rtp_default(&tx_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&tx_policy.rtcp);
+    tx_policy.ssrc.type  = ssrc_any_outbound;
+    tx_policy.key        = key;
+    tx_policy.next       = NULL;
+
+    memset(&rx_policy, 0, sizeof rx_policy);
+    srtp_crypto_policy_set_rtp_default(&rx_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&rx_policy.rtcp);
+    rx_policy.ssrc.type  = ssrc_any_inbound;
+    rx_policy.key        = key;
+    rx_policy.next       = NULL;
+
+    /* 3. Create sender and receiver sessions */
+    srtp_t tx_session, rx_session;
+    if (srtp_create(&tx_session, &tx_policy) != srtp_err_status_ok ||
+        srtp_create(&rx_session, &rx_policy) != srtp_err_status_ok) {
+        fputs("srtp_create failed\n", stderr);
+        return 1;
+    }
+
+    /* 4. Protect a packet on the sender side */
+    uint8_t pkt[128 + SRTP_MAX_TRAILER_LEN];
+    size_t  rtp_len = make_rtp_packet(pkt, 1, 0xdeadbeef);
+    size_t  srtp_len = sizeof(pkt);
+
+    if (srtp_protect(tx_session, pkt, rtp_len, pkt, &srtp_len, 0)
+            != srtp_err_status_ok) {
+        fputs("srtp_protect failed\n", stderr);
+        return 1;
+    }
+    printf("Protected: %zu bytes -> %zu bytes\n", rtp_len, srtp_len);
+
+    /* 5. Unprotect on the receiver side */
+    uint8_t rx_pkt[128 + SRTP_MAX_TRAILER_LEN];
+    memcpy(rx_pkt, pkt, srtp_len);
+    size_t  rx_rtp_len = sizeof(rx_pkt);
+
+    if (srtp_unprotect(rx_session, rx_pkt, srtp_len, rx_pkt, &rx_rtp_len)
+            != srtp_err_status_ok) {
+        fputs("srtp_unprotect failed\n", stderr);
+        return 1;
+    }
+    printf("Unprotected: %zu bytes -> %zu bytes\n", srtp_len, rx_rtp_len);
+
+    /* 6. Teardown */
+    srtp_dealloc(tx_session);
+    srtp_dealloc(rx_session);
+    srtp_shutdown();
+    return 0;
+}
+```

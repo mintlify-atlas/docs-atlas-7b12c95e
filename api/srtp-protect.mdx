@@ -1,0 +1,184 @@
+---
+title: 'srtp_protect'
+description: 'Sender-side SRTP packet processing — encrypts and authenticates an outbound RTP packet.'
+keywords: ['srtp', 'protect', 'encrypt', 'rtp', 'packet processing', 'libsrtp']
+---
+
+## Overview
+
+`srtp_protect()` applies SRTP protection to an outbound RTP packet. On success, the output buffer contains the complete SRTP packet with the authentication tag (and MKI, if enabled) appended.
+
+```c
+#include <srtp3/srtp.h>
+
+srtp_err_status_t srtp_protect(srtp_t ctx,
+                               const uint8_t *rtp,
+                               size_t rtp_len,
+                               uint8_t *srtp,
+                               size_t *srtp_len,
+                               size_t mki_index);
+```
+
+## Parameters
+
+<ParamField path="ctx" type="srtp_t" required>
+  The SRTP session context returned by `srtp_create()`. The session must contain a stream policy whose SSRC matches the SSRC in the RTP header, or a wildcard outbound policy (`ssrc_any_outbound`).
+</ParamField>
+
+<ParamField path="rtp" type="const uint8_t *" required>
+  Pointer to the RTP packet to protect (header and payload). The buffer must be 32-bit aligned. The packet is read but not modified by the function.
+</ParamField>
+
+<ParamField path="rtp_len" type="size_t" required>
+  Length in octets of the complete RTP packet, including the fixed 12-byte header, CSRC list, extension header (if present), and payload.
+</ParamField>
+
+<ParamField path="srtp" type="uint8_t *" required>
+  Pointer to the output buffer that will receive the protected SRTP packet. May be set to the same address as `rtp` for in-place processing, which avoids an extra allocation.
+
+  The buffer must be at least `rtp_len + SRTP_MAX_TRAILER_LEN` bytes in size. Use `srtp_get_protect_trailer_length()` to obtain the exact trailer length for a given session and MKI index.
+</ParamField>
+
+<ParamField path="srtp_len" type="size_t *" required>
+  On input: the size in octets of the `srtp` output buffer.
+
+  On output: if `srtp_err_status_ok` is returned, set to the length in octets of the resulting SRTP packet. If any error is returned, the value pointed to is undefined.
+</ParamField>
+
+<ParamField path="mki_index" type="size_t" required>
+  Zero-based index selecting which master key to use when `use_mki` is `true` in the session policy. Valid values range from `0` to `num_master_keys - 1`. Ignored when `use_mki` is `false`.
+</ParamField>
+
+## Return values
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  The packet was protected successfully. `*srtp_len` holds the length of the output SRTP packet.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_replay_fail" type="9">
+  The RTP sequence number was non-increasing by more than 2^15 (32,768) packets relative to the expected index. The packet was not protected.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_buffer_small" type="28">
+  The `srtp` buffer is too small to hold the resulting SRTP packet. Allocate at least `rtp_len + SRTP_MAX_TRAILER_LEN` bytes, or query the exact size with `srtp_get_protect_trailer_length()`.
+</ResponseField>
+
+<ResponseField name="other" type="srtp_err_status_t">
+  A failure occurred in the underlying cryptographic mechanisms (e.g., cipher or authentication function). The output buffer contents are undefined.
+</ResponseField>
+
+## Important notes
+
+<Warning>
+  The RTP packet buffer (`rtp`) must be 32-bit aligned. Passing a non-aligned pointer produces undefined behavior.
+</Warning>
+
+<Note>
+  RTP sequence numbers presented to `srtp_protect()` need not be strictly consecutive, but they must not differ from the expected packet index by more than 2^15 = 32,768 packets. Larger gaps cause `srtp_err_status_replay_fail`.
+</Note>
+
+<Note>
+  `srtp` may point to the same buffer as `rtp` for in-place operation. When in-place, ensure the buffer is still large enough for the trailer bytes that will be appended.
+</Note>
+
+## Trailer length helper
+
+Use `srtp_get_protect_trailer_length()` to determine the exact number of bytes that `srtp_protect()` will append to a packet for a specific session and MKI index. This is more precise than using `SRTP_MAX_TRAILER_LEN`.
+
+```c
+srtp_err_status_t srtp_get_protect_trailer_length(srtp_t session,
+                                                  size_t mki_index,
+                                                  size_t *length);
+```
+
+### Parameters
+
+<ParamField path="session" type="srtp_t" required>
+  The SRTP session context to query.
+</ParamField>
+
+<ParamField path="mki_index" type="size_t" required>
+  The MKI index for which to obtain the trailer length. Pass `0` when MKI is not in use.
+</ParamField>
+
+<ParamField path="length" type="size_t *" required>
+  On output, set to the exact number of octets that will be appended to the RTP packet during protection.
+</ParamField>
+
+### Return values
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  The trailer length was written to `*length` successfully.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_bad_mki" type="25">
+  The supplied `mki_index` is out of range for this session.
+</ResponseField>
+
+## Example
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int send_srtp_packet(srtp_t session,
+                     const uint8_t *rtp_pkt,
+                     size_t rtp_pkt_len)
+{
+    srtp_err_status_t status;
+    size_t trailer_len = 0;
+    size_t srtp_buf_len;
+    uint8_t *srtp_buf;
+    size_t srtp_out_len;
+
+    /* Query the exact trailer size for MKI index 0. */
+    status = srtp_get_protect_trailer_length(session, 0, &trailer_len);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_get_protect_trailer_length failed: %d\n", status);
+        return -1;
+    }
+
+    /* Allocate an output buffer large enough for the SRTP packet. */
+    srtp_buf_len = rtp_pkt_len + trailer_len;
+    srtp_buf = malloc(srtp_buf_len);
+    if (!srtp_buf) {
+        fprintf(stderr, "allocation failed\n");
+        return -1;
+    }
+
+    /* Copy the RTP packet into the output buffer for in-place protection. */
+    memcpy(srtp_buf, rtp_pkt, rtp_pkt_len);
+    srtp_out_len = srtp_buf_len;
+
+    /* Protect the packet (in-place: srtp_buf == srtp_buf). */
+    status = srtp_protect(session,
+                          srtp_buf,        /* rtp    — input  */
+                          rtp_pkt_len,     /* rtp_len         */
+                          srtp_buf,        /* srtp   — output */
+                          &srtp_out_len,   /* srtp_len        */
+                          0);              /* mki_index       */
+
+    if (status == srtp_err_status_ok) {
+        /* srtp_buf[0..srtp_out_len-1] now contains the SRTP packet. */
+        /* Transmit srtp_out_len bytes from srtp_buf here. */
+        printf("SRTP packet ready, length %zu\n", srtp_out_len);
+    } else if (status == srtp_err_status_replay_fail) {
+        fprintf(stderr, "srtp_protect: sequence number out of order\n");
+    } else if (status == srtp_err_status_buffer_small) {
+        fprintf(stderr, "srtp_protect: output buffer too small\n");
+    } else {
+        fprintf(stderr, "srtp_protect: cryptographic failure (%d)\n", status);
+    }
+
+    free(srtp_buf);
+    return (status == srtp_err_status_ok) ? 0 : -1;
+}
+```
+
+## Related
+
+- [`srtp_unprotect`](/api/srtp-unprotect) — receiver-side RTP processing
+- [`srtp_protect_rtcp`](/api/srtp-protect-rtcp) — sender-side RTCP processing
+- [`srtp_create`](/api/srtp-create) — create an SRTP session

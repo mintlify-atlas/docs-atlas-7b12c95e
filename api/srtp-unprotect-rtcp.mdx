@@ -1,0 +1,162 @@
+---
+title: 'srtp_unprotect_rtcp'
+description: 'Receiver-side SRTCP packet processing — verifies and decrypts an inbound SRTCP packet.'
+keywords: ['srtp', 'srtcp', 'unprotect', 'rtcp', 'packet processing', 'libsrtp', 'replay protection']
+---
+
+## Overview
+
+`srtp_unprotect_rtcp()` verifies the cryptographic protection of an inbound SRTCP packet and, if valid, returns the recovered RTCP packet. The function performs replay detection, message authentication, and decryption in that order.
+
+```c
+#include <srtp3/srtp.h>
+
+srtp_err_status_t srtp_unprotect_rtcp(srtp_t ctx,
+                                      const uint8_t *srtcp,
+                                      size_t srtcp_len,
+                                      uint8_t *rtcp,
+                                      size_t *rtcp_len);
+```
+
+## Parameters
+
+<ParamField path="ctx" type="srtp_t" required>
+  The SRTP session context returned by `srtp_create()`. The same session context is used for both RTP and RTCP processing; the RTCP crypto policy is taken from the `rtcp` field of the matching `srtp_policy_t`.
+</ParamField>
+
+<ParamField path="srtcp" type="const uint8_t *" required>
+  Pointer to the received SRTCP packet (header, encrypted payload, SRTCP index, authentication tag, and optional MKI). The buffer must be 32-bit aligned. The packet is read but not modified by the function.
+</ParamField>
+
+<ParamField path="srtcp_len" type="size_t" required>
+  Length in octets of the complete SRTCP packet, including the RTCP header, encrypted payload, 4-byte SRTCP index, authentication tag, and optional MKI.
+</ParamField>
+
+<ParamField path="rtcp" type="uint8_t *" required>
+  Pointer to the output buffer that will receive the recovered RTCP packet. May be set to the same address as `srtcp` for in-place processing.
+
+  The buffer must be at least `srtcp_len` bytes in size (the output is always shorter than or equal to the input, since the SRTCP trailer is stripped).
+</ParamField>
+
+<ParamField path="rtcp_len" type="size_t *" required>
+  On input: the size in octets of the `rtcp` output buffer.
+
+  On output: if `srtp_err_status_ok` is returned, set to the length in octets of the recovered RTCP packet. If any error is returned, the value pointed to is undefined.
+</ParamField>
+
+## Return values
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  The SRTCP packet is valid. `*rtcp_len` holds the length of the recovered RTCP packet, which is ready for consumption.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_auth_fail" type="7">
+  The message authentication check failed. The packet may have been tampered with or corrupted in transit. Discard the packet.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_replay_fail" type="9">
+  The packet is a replay — it has already been received and accepted. The SRTCP index embedded in the packet falls within the 128-bit replay window but has already been seen. Discard the packet.
+</ResponseField>
+
+<ResponseField name="srtp_err_status_bad_mki" type="25">
+  The MKI value embedded in the packet does not match any known master key in the session. Discard the packet.
+</ResponseField>
+
+<ResponseField name="other" type="srtp_err_status_t">
+  A failure in the underlying cryptographic mechanisms. The output buffer contents are undefined.
+</ResponseField>
+
+## Important notes
+
+<Warning>
+  The SRTCP packet buffer (`srtcp`) must be 32-bit aligned. Passing a non-aligned pointer produces undefined behavior.
+</Warning>
+
+<Warning>
+  A packet that fails authentication (`srtp_err_status_auth_fail`) must be silently discarded. Do not forward or act on its payload, as it may be forged or corrupted.
+</Warning>
+
+<Note>
+  SRTCP replay protection uses a hardcoded 128-bit replay window, unlike SRTP where the window size is configurable via `srtp_policy_t.window_size`. Any SRTCP packet whose SRTCP index has already been accepted within that window will be rejected.
+</Note>
+
+<Note>
+  `rtcp` may point to the same buffer as `srtcp` for in-place decryption. The recovered RTCP packet is always shorter than the SRTCP input (the SRTCP index, auth tag, and MKI are stripped), so no additional space is needed.
+</Note>
+
+## Example
+
+```c
+#include <srtp3/srtp.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int receive_srtcp_packet(srtp_t session,
+                         const uint8_t *received_pkt,
+                         size_t received_len)
+{
+    srtp_err_status_t status;
+    size_t rtcp_buf_len;
+    uint8_t *rtcp_buf;
+    size_t rtcp_out_len;
+
+    /* Allocate an output buffer. The RTCP output is always <= SRTCP input. */
+    rtcp_buf_len = received_len;
+    rtcp_buf = malloc(rtcp_buf_len);
+    if (!rtcp_buf) {
+        fprintf(stderr, "allocation failed\n");
+        return -1;
+    }
+
+    rtcp_out_len = rtcp_buf_len;
+
+    /* Unprotect the received SRTCP packet. */
+    status = srtp_unprotect_rtcp(session,
+                                 received_pkt,   /* srtcp     — input  */
+                                 received_len,   /* srtcp_len          */
+                                 rtcp_buf,       /* rtcp      — output */
+                                 &rtcp_out_len); /* rtcp_len           */
+
+    switch (status) {
+    case srtp_err_status_ok:
+        /* rtcp_buf[0..rtcp_out_len-1] is the recovered RTCP packet. */
+        printf("RTCP packet recovered, length %zu\n", rtcp_out_len);
+        /* Process rtcp_buf here... */
+        break;
+
+    case srtp_err_status_auth_fail:
+        /* Packet was tampered or corrupted — discard silently. */
+        fprintf(stderr,
+                "srtp_unprotect_rtcp: authentication failed, packet discarded\n");
+        break;
+
+    case srtp_err_status_replay_fail:
+        /* Already received this SRTCP index — discard silently.
+         * SRTCP replay window is 128 bits (hardcoded). */
+        fprintf(stderr,
+                "srtp_unprotect_rtcp: replay detected, packet discarded\n");
+        break;
+
+    case srtp_err_status_bad_mki:
+        /* MKI in packet does not match any key in this session. */
+        fprintf(stderr,
+                "srtp_unprotect_rtcp: unknown MKI, packet discarded\n");
+        break;
+
+    default:
+        fprintf(stderr,
+                "srtp_unprotect_rtcp: cryptographic failure (%d)\n", status);
+        break;
+    }
+
+    free(rtcp_buf);
+    return (status == srtp_err_status_ok) ? 0 : -1;
+}
+```
+
+## Related
+
+- [`srtp_protect_rtcp`](/api/srtp-protect-rtcp) — sender-side RTCP processing
+- [`srtp_unprotect`](/api/srtp-unprotect) — receiver-side RTP processing
+- [`srtp_create`](/api/srtp-create) — create an SRTP session

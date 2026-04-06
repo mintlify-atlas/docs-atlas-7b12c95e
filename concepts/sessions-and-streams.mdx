@@ -1,0 +1,229 @@
+---
+title: 'Sessions and streams'
+description: 'Understand the two-level architecture of libSRTP: sessions (srtp_t) that contain one or more per-sender stream contexts identified by SSRC.'
+keywords: ['srtp_t', 'srtp_stream_t', 'SSRC', 'session', 'stream', 'srtp_policy_t', 'srtp_ssrc_t']
+---
+
+## Overview
+
+libSRTP organises protected RTP traffic into two nested levels:
+
+- A **session** (`srtp_t`) is the top-level container. It represents all of the RTP/RTCP traffic exchanged between a set of participants using the same destination transport address.
+- A **stream** (`srtp_stream_t`) is a per-sender context that lives inside a session. Each distinct RTP sender is identified by its SSRC and gets its own stream context with independent keys, sequence-number state, and replay-protection data.
+
+## The session type: `srtp_t`
+
+```c
+typedef srtp_ctx_t *srtp_t;
+```
+
+`srtp_t` is an opaque pointer to the internal `srtp_ctx_t` structure. The implementation details are intentionally hidden so that the public API is decoupled from the library internals. You never allocate or inspect `srtp_ctx_t` directly; all interaction goes through the functions declared in `srtp.h`.
+
+A session:
+
+- Holds a collection of stream contexts, one per SSRC.
+- Applies the correct per-stream crypto policy when you call `srtp_protect()` or `srtp_unprotect()`.
+- Can contain wildcard streams that match any inbound or outbound SSRC not explicitly registered.
+
+## The stream type: `srtp_stream_t`
+
+`srtp_stream_t` is also opaque. Each stream context stores:
+
+- The session keys derived from the master key.
+- The current packet index and roll-over counter (ROC).
+- The anti-replay window for detecting replayed packets.
+- The cipher and authentication function instances for that SSRC.
+
+A stream context cannot exist independently of a session. You manage streams through the session API — you never allocate a stream directly.
+
+## SSRCs: synchronisation source identifiers
+
+An SSRC (Synchronisation Source) is a 32-bit value embedded in every RTP packet header. It uniquely identifies a single media sender within an RTP session. libSRTP uses the SSRC to look up the correct stream context for each incoming or outgoing packet.
+
+### The `srtp_ssrc_t` struct
+
+```c
+typedef struct {
+    srtp_ssrc_type_t type;  /* ssrc_specific, ssrc_any_inbound, or ssrc_any_outbound */
+    uint32_t         value; /* the concrete SSRC value, when type == ssrc_specific   */
+} srtp_ssrc_t;
+```
+
+### The `srtp_ssrc_type_t` enum
+
+```c
+typedef enum {
+    ssrc_undefined    = 0, /* undefined — do not use                              */
+    ssrc_specific     = 1, /* a concrete 32-bit SSRC value                        */
+    ssrc_any_inbound  = 2, /* wildcard matching all inbound SSRCs                 */
+    ssrc_any_outbound = 3  /* wildcard matching all outbound SSRCs                */
+} srtp_ssrc_type_t;
+```
+
+## Wildcard SSRCs
+
+When you cannot enumerate every sender in advance — for example, in a conference bridge — you can register a wildcard policy:
+
+| Type | Applies to | Used by |
+|---|---|---|
+| `ssrc_any_inbound` | All inbound SSRCs not explicitly registered | `srtp_unprotect()` |
+| `ssrc_any_outbound` | All outbound SSRCs not explicitly registered | `srtp_protect()` |
+
+<Warning>
+A single wildcard cannot cover both directions. `ssrc_any_inbound` and `ssrc_any_outbound` are separate entries in the policy list. This is intentional: it prevents a key used for sending from accidentally being applied to received traffic, which would be a security lapse.
+</Warning>
+
+When a wildcard policy matches an incoming packet whose SSRC has not been seen before, libSRTP creates a new stream context for that SSRC on the fly, using the wildcard policy.
+
+## Session vs. stream: a summary
+
+| Concept | Type | Scope | Lifecycle |
+|---|---|---|---|
+| Session | `srtp_t` | All traffic to one transport address | `srtp_create()` → `srtp_dealloc()` |
+| Stream | `srtp_stream_t` (opaque) | Traffic from one SSRC | Added/removed through session API |
+
+## Session lifecycle
+
+<Steps>
+  <Step title="Initialise the library">
+    Call `srtp_init()` once before any other libSRTP function. It sets up the internal cryptographic kernel.
+
+    ```c
+    srtp_err_status_t status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        /* handle error */
+    }
+    ```
+  </Step>
+
+  <Step title="Build a policy">
+    Populate one or more `srtp_policy_t` structures to describe which streams to protect and how. Link multiple policies together in a singly-linked list.
+
+    ```c
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof(srtp_policy_t));
+
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+    policy.ssrc.type  = ssrc_specific;
+    policy.ssrc.value = 0xDEADBEEF;
+    policy.key        = master_key;   /* 30-byte key+salt buffer */
+    policy.next       = NULL;         /* last element in the list */
+    ```
+  </Step>
+
+  <Step title="Create the session">
+    Pass the policy (or linked list of policies) to `srtp_create()`.
+
+    ```c
+    srtp_t session;
+    srtp_err_status_t status = srtp_create(&session, &policy);
+    ```
+
+    You may also pass `NULL` as the policy and add streams later with `srtp_stream_add()`.
+  </Step>
+
+  <Step title="Add streams dynamically (optional)">
+    After creation, add or remove individual stream contexts at any time.
+
+    ```c
+    /* add a new stream for a newly joined participant */
+    srtp_stream_add(session, &new_stream_policy);
+
+    /* remove a stream when a participant leaves */
+    srtp_stream_remove(session, ssrc_value);
+    ```
+
+    <Note>
+    `srtp_stream_remove()` takes the SSRC in host byte order. Wildcard streams cannot be removed this way.
+    </Note>
+  </Step>
+
+  <Step title="Protect and unprotect packets">
+    On the sender side, call `srtp_protect()`. On the receiver side, call `srtp_unprotect()`. libSRTP looks up the stream context from the SSRC in the packet header automatically.
+
+    ```c
+    /* sender */
+    size_t srtp_len = sizeof(srtp_buf);
+    srtp_protect(session, rtp_buf, rtp_len, srtp_buf, &srtp_len, 0);
+
+    /* receiver */
+    size_t rtp_len = sizeof(rtp_buf);
+    srtp_unprotect(session, srtp_buf, srtp_len, rtp_buf, &rtp_len);
+    ```
+  </Step>
+
+  <Step title="Deallocate the session">
+    When the session is no longer needed, free all resources.
+
+    ```c
+    srtp_dealloc(session);
+    ```
+
+    Call `srtp_shutdown()` once when the application exits to clean up the library's global state.
+  </Step>
+</Steps>
+
+## Multi-stream sessions with a policy linked list
+
+A single call to `srtp_create()` can initialise multiple streams at once by passing a linked list of `srtp_policy_t` elements. Each element describes one stream (or one wildcard direction).
+
+```c
+srtp_policy_t policy_a, policy_b, wildcard;
+
+/* stream A — specific SSRC */
+memset(&policy_a, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_rtp_default(&policy_a.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy_a.rtcp);
+policy_a.ssrc.type  = ssrc_specific;
+policy_a.ssrc.value = 0x11111111;
+policy_a.key        = key_a;
+policy_a.next       = &policy_b;   /* link to next */
+
+/* stream B — specific SSRC */
+memset(&policy_b, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_rtp_default(&policy_b.rtp);
+srtp_crypto_policy_set_rtcp_default(&policy_b.rtcp);
+policy_b.ssrc.type  = ssrc_specific;
+policy_b.ssrc.value = 0x22222222;
+policy_b.key        = key_b;
+policy_b.next       = &wildcard;   /* link to next */
+
+/* wildcard for any other inbound traffic */
+memset(&wildcard, 0, sizeof(srtp_policy_t));
+srtp_crypto_policy_set_rtp_default(&wildcard.rtp);
+srtp_crypto_policy_set_rtcp_default(&wildcard.rtcp);
+wildcard.ssrc.type = ssrc_any_inbound;
+wildcard.key       = shared_key;
+wildcard.next      = NULL;         /* last element — must be NULL */
+
+srtp_t session;
+srtp_create(&session, &policy_a); /* processes the entire list */
+```
+
+<Warning>
+The final element in the policy linked list **must** have its `next` field set to `NULL`. Failing to do so results in undefined behaviour.
+</Warning>
+
+## The `srtp_policy_t` struct fields relevant to stream identity
+
+```c
+typedef struct srtp_policy_t {
+    srtp_ssrc_t          ssrc;             /* stream identity (specific or wildcard)   */
+    srtp_crypto_policy_t rtp;              /* RTP crypto policy                        */
+    srtp_crypto_policy_t rtcp;             /* RTCP crypto policy                       */
+    uint8_t             *key;              /* master key (single-key mode)             */
+    srtp_master_key_t  **keys;             /* master key array (MKI mode)              */
+    size_t               num_master_keys;  /* number of entries in keys[]              */
+    bool                 use_mki;          /* enable Master Key Identifier             */
+    size_t               mki_size;         /* MKI field length in bytes                */
+    size_t               window_size;      /* replay-protection window in packets      */
+    bool                 allow_repeat_tx;  /* allow retransmission of same seq number  */
+    uint8_t             *enc_xtn_hdr;      /* RTP header extension IDs to encrypt      */
+    size_t               enc_xtn_hdr_count;
+    bool                 use_cryptex;      /* RFC 9335 Cryptex header encryption       */
+    struct srtp_policy_t *next;            /* next policy in the linked list           */
+} srtp_policy_t;
+```
+
+See [Crypto policies](/concepts/crypto-policies) for the fields inside `srtp_crypto_policy_t`, and [Key management](/concepts/key-management) for the key-related fields.

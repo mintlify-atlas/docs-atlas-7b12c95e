@@ -1,0 +1,176 @@
+---
+title: 'AES-GCM policies'
+description: 'Crypto policy setup functions for AES-GCM AEAD cipher suites as defined in RFC 7714.'
+keywords: ['srtp', 'AES-GCM', 'AEAD', 'RFC 7714', 'crypto policy', 'AES-128-GCM', 'AES-256-GCM']
+---
+
+AES-GCM (Galois/Counter Mode) is an Authenticated Encryption with Associated Data (AEAD) cipher that provides both confidentiality and integrity in a single cryptographic operation. Its use in SRTP is defined in [RFC 7714](https://www.rfc-editor.org/rfc/rfc7714).
+
+<Note>
+  AES-GCM requires a third-party cryptographic backend. Build libSRTP with **OpenSSL**, **NSS**, or **mbedTLS** support by enabling the corresponding CMake option (`ENABLE_OPENSSL`, `ENABLE_NSS`, or `ENABLE_MBEDTLS`). AES-GCM is not available with the built-in crypto.
+</Note>
+
+## Why use AES-GCM?
+
+AES-CM (Counter Mode) encrypts the payload and then appends a separate HMAC-SHA1 authentication tag computed over the encrypted data. AES-GCM combines these two steps: the GCM authentication tag is produced as part of the encryption, covering both the ciphertext and the authenticated-but-not-encrypted header fields.
+
+Practical advantages over AES-CM:
+
+- **Single-pass processing** — encrypt and authenticate in one operation, which can be faster on hardware that has dedicated AES-GCM acceleration (e.g., Intel AES-NI + CLMUL).
+- **Shorter code path** — no separate HMAC computation reduces implementation complexity.
+- **AEAD semantics** — the RTP header is authenticated but not encrypted, matching the SRTP model cleanly without extra glue code.
+- **Modern cipher suite** — preferred in newer protocol specifications and compliance frameworks.
+
+Considerations before switching from AES-CM:
+
+- Requires a backend crypto library; cannot fall back to the built-in cipher.
+- Interoperability is limited to peers that also support RFC 7714 (most modern DTLS-SRTP stacks do).
+- Key and salt lengths differ from AES-ICM — see the key-length constants below.
+
+---
+
+## Key length constants
+
+AES-GCM uses a **12-byte salt** (`SRTP_AEAD_SALT_LEN = 12`) rather than the 14-byte salt used by AES-ICM (`SRTP_SALT_LEN = 14`). The combined key+salt constants are:
+
+| Constant | Value | Composition |
+|---|---|---|
+| `SRTP_AES_GCM_128_KEY_LEN_WSALT` | 28 bytes | 16-byte key + 12-byte salt |
+| `SRTP_AES_GCM_256_KEY_LEN_WSALT` | 44 bytes | 32-byte key + 12-byte salt |
+| `SRTP_AEAD_SALT_LEN` | 12 bytes | GCM IV salt length |
+
+<Warning>
+  If you are switching from an AES-ICM policy, the key buffer size changes. Allocating only `SRTP_AES_ICM_128_KEY_LEN_WSALT` (30 bytes) for an AES-GCM session will underallocate the buffer. Always use the GCM-specific constants.
+</Warning>
+
+---
+
+## Policy comparison
+
+| | AES-128-CM (default) | AES-128-GCM | AES-256-GCM |
+|---|---|---|---|
+| **RFC** | RFC 3711 | RFC 7714 | RFC 7714 |
+| **Key size** | 128-bit | 128-bit | 256-bit |
+| **Salt size** | 14 bytes | 12 bytes | 12 bytes |
+| **Key+salt total** | 30 bytes | 28 bytes | 44 bytes |
+| **Auth tag** | 80-bit HMAC-SHA1 | 128-bit GCM tag | 128-bit GCM tag |
+| **Auth type** | Separate HMAC | AEAD (integrated) | AEAD (integrated) |
+| **Built-in crypto** | Yes | No | No |
+| **Security services** | Conf + auth | Conf + auth | Conf + auth |
+
+---
+
+## srtp_crypto_policy_set_aes_gcm_128_16_auth()
+
+```c
+void srtp_crypto_policy_set_aes_gcm_128_16_auth(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to **AES-128-GCM** with a 16-byte (128-bit) authentication tag. This policy provides confidentiality and authentication for both RTP and RTCP using a single AEAD operation.
+
+The master key buffer (`srtp_policy_t.key`) must be `SRTP_AES_GCM_128_KEY_LEN_WSALT` (28) bytes: 16 bytes of key followed immediately by 12 bytes of salt.
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## srtp_crypto_policy_set_aes_gcm_256_16_auth()
+
+```c
+void srtp_crypto_policy_set_aes_gcm_256_16_auth(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to **AES-256-GCM** with a 16-byte (128-bit) authentication tag. Identical in structure to the 128-bit variant but uses a 256-bit key for a higher security margin.
+
+The master key buffer (`srtp_policy_t.key`) must be `SRTP_AES_GCM_256_KEY_LEN_WSALT` (44) bytes: 32 bytes of key followed immediately by 12 bytes of salt.
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## Choosing between AES-128-GCM and AES-256-GCM
+
+Both variants provide a 128-bit authentication tag and differ only in the key size. AES-128-GCM offers approximately 128-bit security against brute force, which exceeds any practical attack capability. AES-256-GCM provides a larger security margin against future cryptanalytic advances, at a small performance cost on software implementations without hardware acceleration.
+
+For most real-time media applications, AES-128-GCM is the appropriate choice. Use AES-256-GCM when your threat model or compliance requirements mandate a 256-bit key (e.g., some government or high-assurance environments).
+
+---
+
+## Example: AES-128-GCM session setup
+
+```c
+#include <srtp3/srtp.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* SRTP_AES_GCM_128_KEY_LEN_WSALT = 28 bytes (16-byte key + 12-byte salt) */
+#define KEY_AND_SALT_LEN SRTP_AES_GCM_128_KEY_LEN_WSALT
+
+srtp_err_status_t create_gcm_session(srtp_t *session,
+                                     const uint8_t key[16],
+                                     const uint8_t salt[SRTP_AEAD_SALT_LEN])
+{
+    srtp_err_status_t status;
+    srtp_policy_t policy;
+
+    memset(&policy, 0, sizeof(policy));
+
+    /* Set both RTP and RTCP to AES-128-GCM. */
+    srtp_crypto_policy_set_aes_gcm_128_16_auth(&policy.rtp);
+    srtp_crypto_policy_set_aes_gcm_128_16_auth(&policy.rtcp);
+
+    /* Build the key+salt buffer: key || salt, contiguous in memory. */
+    uint8_t *keybuf = malloc(KEY_AND_SALT_LEN);
+    if (!keybuf) return srtp_err_status_alloc_fail;
+
+    memcpy(keybuf, key, 16);
+    memcpy(keybuf + 16, salt, SRTP_AEAD_SALT_LEN);
+
+    /* Accept any inbound SSRC with this policy. */
+    policy.ssrc.type = ssrc_any_inbound;
+    policy.key       = keybuf;
+    policy.next      = NULL;
+
+    status = srtp_create(session, &policy);
+    free(keybuf);
+    return status;
+}
+```
+
+## Example: AES-256-GCM session setup
+
+```c
+/* SRTP_AES_GCM_256_KEY_LEN_WSALT = 44 bytes (32-byte key + 12-byte salt) */
+#define KEY_AND_SALT_LEN_256 SRTP_AES_GCM_256_KEY_LEN_WSALT
+
+srtp_err_status_t create_gcm256_session(srtp_t *session,
+                                        const uint8_t key[32],
+                                        const uint8_t salt[SRTP_AEAD_SALT_LEN])
+{
+    srtp_err_status_t status;
+    srtp_policy_t policy;
+
+    memset(&policy, 0, sizeof(policy));
+
+    srtp_crypto_policy_set_aes_gcm_256_16_auth(&policy.rtp);
+    srtp_crypto_policy_set_aes_gcm_256_16_auth(&policy.rtcp);
+
+    uint8_t *keybuf = malloc(KEY_AND_SALT_LEN_256);
+    if (!keybuf) return srtp_err_status_alloc_fail;
+
+    memcpy(keybuf, key, 32);
+    memcpy(keybuf + 32, salt, SRTP_AEAD_SALT_LEN);
+
+    policy.ssrc.type = ssrc_any_inbound;
+    policy.key       = keybuf;
+    policy.next      = NULL;
+
+    status = srtp_create(session, &policy);
+    free(keybuf);
+    return status;
+}
+```

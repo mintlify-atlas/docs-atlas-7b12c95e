@@ -1,0 +1,413 @@
+---
+title: "Building libSRTP"
+description: "Complete instructions for building libSRTP with Autotools, CMake, or Meson on Linux, macOS, and Windows."
+---
+
+libSRTP supports three build systems: Autotools, CMake, and Meson. All three produce the same library (`libsrtp3`). Choose the one that fits your platform and toolchain.
+
+<Tip>
+Using an external crypto backend (OpenSSL, wolfSSL, mbedTLS, or NSS) is strongly recommended. The built-in engine supports only AES-128 and AES-256 in counter mode; it does not support AES-192 or AES-GCM. See [Crypto backends](#crypto-backends) below.
+</Tip>
+
+## Autotools
+
+Autotools is the traditional Unix build path. It requires GNU Make (BSD Make is not supported; use `gmake` on platforms where both are installed).
+
+### Basic build
+
+```bash
+./configure
+make
+sudo make install
+```
+
+### Configure options
+
+| Option | Description |
+|--------|-------------|
+| `--help`, `-h` | Display all available options |
+| `--with-crypto-library=TYPE` | Select crypto backend: `openssl`, `wolfssl`, `nss`, or `internal` (default: `openssl`) |
+| `--with-openssl-dir=DIR` | Path to a non-system OpenSSL installation |
+| `--with-nss-dir=DIR` | Path to a non-system NSS installation |
+| `--with-wolfssl-dir=DIR` | Path to a non-system wolfSSL installation |
+| `--enable-openssl-kdf` | Use the OpenSSL KDF algorithm (requires a fork of OpenSSL that supports `kdf_srtp`) |
+| `--enable-debug-logging` | Enable debug logging in all modules at compile time |
+| `--enable-log-stdout` | Redirect log output to stdout |
+| `--with-log-file=FILE` | Write log output to the specified file |
+
+<Note>
+`--enable-log-stdout` and `--with-log-file` are mutually exclusive. By default, there is no log output.
+</Note>
+
+### Examples
+
+<CodeGroup>
+
+```bash With OpenSSL
+./configure --with-crypto-library=openssl
+make
+sudo make install
+```
+
+```bash With NSS
+./configure --with-crypto-library=nss
+make
+sudo make install
+```
+
+```bash With debug logging to stdout
+./configure --with-crypto-library=openssl --enable-debug-logging --enable-log-stdout
+make
+```
+
+```bash Custom OpenSSL path
+./configure --with-crypto-library=openssl \
+            --with-openssl-dir=/opt/openssl-3
+make
+```
+
+</CodeGroup>
+
+### Regenerating the configure script
+
+If you modify `configure.ac` (for example, to add a library dependency), regenerate `configure` using automake. You also need `pkgconfig` installed.
+
+```bash
+# macOS
+brew install automake pkgconfig
+# Edit configure.ac, then:
+autoreconf -ivf
+```
+
+---
+
+## CMake
+
+CMake works on all platforms and is required for Visual Studio builds on Windows. CMake 3.21 or later is required.
+
+### Basic build
+
+```bash
+mkdir build
+cd build
+cmake ..
+make
+sudo make install
+```
+
+### CMake options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CRYPTO_LIBRARY` | `openssl` | Crypto backend: `openssl`, `wolfssl`, `mbedtls`, `nss`, or `internal` |
+| `BUILD_SHARED_LIBS` | `OFF` | Build a shared library instead of a static one |
+| `LIBSRTP_TEST_APPS` | `ON` | Build test applications |
+| `ENABLE_DEBUG_LOGGING` | `OFF` | Enable debug logging in all modules |
+| `ERR_REPORTING_STDOUT` | `OFF` | Enable logging to stdout |
+| `ERR_REPORTING_FILE` | _(empty)_ | Path to a log file |
+| `ENABLE_WARNINGS` | `ON` | Enable compiler warnings |
+| `ENABLE_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
+| `ENABLE_SANITIZE_ADDR` | `OFF` | Enable AddressSanitizer |
+| `ENABLE_SANITIZE_UNDEF` | `OFF` | Enable UndefinedBehaviorSanitizer |
+| `ENABLE_LTO` | `OFF` | Enable Link-Time Optimisation |
+
+### Examples
+
+<CodeGroup>
+
+```bash With OpenSSL
+mkdir build && cd build
+cmake .. -DCRYPTO_LIBRARY=openssl
+make
+```
+
+```bash With mbedTLS
+mkdir build && cd build
+cmake .. -DCRYPTO_LIBRARY=mbedtls
+make
+```
+
+```bash Shared library, no tests
+mkdir build && cd build
+cmake .. -DBUILD_SHARED_LIBS=ON -DLIBSRTP_TEST_APPS=OFF
+make
+sudo make install
+```
+
+```bash Debug logging build
+mkdir build && cd build
+cmake .. -DCRYPTO_LIBRARY=openssl \
+         -DENABLE_DEBUG_LOGGING=ON \
+         -DERR_REPORTING_STDOUT=ON
+make
+```
+
+</CodeGroup>
+
+### Visual Studio (Windows)
+
+CMake generates Visual Studio project files. Download CMake from [cmake.org](https://cmake.org/) if it is not already installed.
+
+```bash
+# 32-bit project files for Visual Studio 2017
+mkdir build
+cd build
+cmake .. -G "Visual Studio 15 2017"
+
+# 64-bit project files for Visual Studio 2017
+cmake .. -G "Visual Studio 15 2017 Win64"
+```
+
+Open the generated `.sln` file in Visual Studio, or build from the command line:
+
+```bash
+cmake --build . --config Release
+```
+
+<Note>
+On Windows, libSRTP links against `ws2_32` automatically. When building a shared library on Windows, a `.def` export file (`srtp.def`) is included in the build.
+</Note>
+
+---
+
+## Meson
+
+Meson works on all platforms, including Windows. Meson 0.52.0 or later is required. See [mesonbuild.com/Getting-meson.html](https://mesonbuild.com/Getting-meson.html) for installation instructions.
+
+### Basic build
+
+```bash
+meson setup builddir
+meson compile -C builddir
+sudo meson install -C builddir
+```
+
+### Meson options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `crypto-library` | `openssl` | Crypto backend: `openssl`, `wolfssl`, `nss`, `mbedtls`, or `internal` |
+| `crypto-library-kdf` | `auto` | Enable KDF support for the selected backend (OpenSSL and wolfSSL only) |
+| `debug-logging` | `false` | Enable debug logging in all modules |
+| `log-stdout` | `false` | Redirect log output to stdout |
+| `log-file` | _(empty)_ | Write log output to the specified file |
+| `tests` | `auto` | Build test applications (`enabled`, `disabled`, or `auto`) |
+| `fuzzer` | `auto` | Build the fuzzing harness |
+| `doc` | `auto` | Build Doxygen documentation |
+| `default_library` | `shared` | Library type: `shared`, `static`, or `both` |
+
+### Examples
+
+<CodeGroup>
+
+```bash With OpenSSL
+meson setup builddir -Dcrypto-library=openssl
+meson compile -C builddir
+sudo meson install -C builddir
+```
+
+```bash Static library with NSS
+meson setup builddir \
+  -Dcrypto-library=nss \
+  -Ddefault_library=static
+meson compile -C builddir
+```
+
+```bash Custom install prefix
+meson setup builddir \
+  -Dcrypto-library=openssl \
+  --prefix=/usr/local
+meson compile -C builddir
+sudo meson install -C builddir
+```
+
+```bash Debug logging build
+meson setup builddir \
+  -Dcrypto-library=openssl \
+  -Ddebug-logging=true \
+  -Dlog-stdout=true
+meson compile -C builddir
+```
+
+</CodeGroup>
+
+You can also use Ninja targets directly:
+
+```bash
+ninja -C builddir
+ninja -C builddir test
+ninja -C builddir install
+```
+
+### Visual Studio with Meson (Windows)
+
+Run the Meson commands from inside a Visual Studio command prompt, or first run `vcvarsall.bat` with the appropriate architecture argument:
+
+```bash
+# In a VS Developer Command Prompt:
+meson setup builddir -Dcrypto-library=openssl
+meson compile -C builddir
+```
+
+---
+
+## Crypto backends
+
+<AccordionGroup>
+  <Accordion title="OpenSSL (recommended)">
+    OpenSSL is the most widely used backend. It enables AES-GCM, AES-192, and optionally OpenSSL KDF.
+
+    Install the OpenSSL development package for your platform:
+
+    ```bash
+    # Debian / Ubuntu
+    sudo apt-get install libssl-dev
+
+    # macOS (Homebrew)
+    brew install openssl
+
+    # Fedora / RHEL
+    sudo dnf install openssl-devel
+    ```
+
+    Then configure with:
+
+    | Build system | Flag |
+    |---|---|
+    | Autotools | `--with-crypto-library=openssl` |
+    | CMake | `-DCRYPTO_LIBRARY=openssl` |
+    | Meson | `-Dcrypto-library=openssl` |
+  </Accordion>
+
+  <Accordion title="wolfSSL">
+    wolfSSL is a lightweight TLS library commonly used in embedded and IoT contexts. It enables AES-GCM and wolfSSL KDF.
+
+    | Build system | Flag |
+    |---|---|
+    | Autotools | `--with-crypto-library=wolfssl` |
+    | CMake | `-DCRYPTO_LIBRARY=wolfssl` |
+    | Meson | `-Dcrypto-library=wolfssl` |
+
+    Use `--with-wolfssl-dir=DIR` (Autotools) to point to a non-system installation.
+  </Accordion>
+
+  <Accordion title="mbedTLS">
+    mbedTLS (formerly PolarSSL) is a compact TLS library suited for constrained environments. It enables AES-GCM. Available with CMake and Meson only.
+
+    | Build system | Flag |
+    |---|---|
+    | CMake | `-DCRYPTO_LIBRARY=mbedtls` |
+    | Meson | `-Dcrypto-library=mbedtls` |
+  </Accordion>
+
+  <Accordion title="NSS (Mozilla Network Security Services)">
+    NSS is Mozilla's cryptographic library. It enables AES-GCM.
+
+    | Build system | Flag |
+    |---|---|
+    | Autotools | `--with-crypto-library=nss` |
+    | CMake | `-DCRYPTO_LIBRARY=nss` |
+    | Meson | `-Dcrypto-library=nss` |
+
+    Use `--with-nss-dir=DIR` (Autotools) to point to a non-system installation.
+  </Accordion>
+
+  <Accordion title="Internal (no external dependency)">
+    The built-in crypto engine requires no external libraries. It supports AES-128 and AES-256 in counter mode only. AES-192 and AES-GCM are not available.
+
+    | Build system | Flag |
+    |---|---|
+    | Autotools | `--with-crypto-library=internal` |
+    | CMake | `-DCRYPTO_LIBRARY=internal` |
+    | Meson | `-Dcrypto-library=internal` |
+
+    <Warning>
+      Do not use the internal engine in production unless you have no alternative. It lacks AES-GCM support and has not been through the same level of external scrutiny as the external backends.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Platform notes
+
+<AccordionGroup>
+  <Accordion title="macOS">
+    The system OpenSSL on macOS is deprecated (LibreSSL) and may not be compatible. Install OpenSSL via Homebrew and point the build at it:
+
+    ```bash
+    brew install openssl
+
+    # Autotools
+    ./configure --with-crypto-library=openssl \
+                --with-openssl-dir=$(brew --prefix openssl)
+
+    # CMake — set PKG_CONFIG_PATH or OPENSSL_ROOT_DIR
+    cmake .. -DCRYPTO_LIBRARY=openssl \
+             -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
+
+    # Meson — PKG_CONFIG_PATH is usually sufficient
+    PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig" \
+      meson setup builddir -Dcrypto-library=openssl
+    ```
+
+    GNU Make is required for the Autotools path. BSD Make (the default `make` on macOS) will not work. Use `gmake` if both are installed, or install GNU Make with `brew install make`.
+  </Accordion>
+
+  <Accordion title="Windows (MSVC / Visual Studio)">
+    Use CMake to generate Visual Studio project files. Meson with a Visual Studio command prompt is also supported.
+
+    Autotools is not supported natively on Windows. Use Cygwin or MinGW if you require the Autotools build on Windows.
+
+    When building a shared library (`BUILD_SHARED_LIBS=ON`), the build system automatically includes `srtp.def` to export the public API symbols. Link your application against `srtp3.lib`.
+  </Accordion>
+
+  <Accordion title="Linux">
+    All three build systems work on Linux. Install the development package for your chosen crypto backend from your distribution's package manager, then run the configure step.
+
+    If you need to install to a non-system prefix, pass `--prefix=DIR` (Autotools/Meson) or `-DCMAKE_INSTALL_PREFIX=DIR` (CMake).
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Verifying the build
+
+After building, run the test suite to confirm the library is functioning correctly on your platform.
+
+<Tabs>
+  <Tab title="Autotools">
+    ```bash
+    make runtest
+    ```
+  </Tab>
+  <Tab title="CMake">
+    ```bash
+    cd build
+    ctest -V
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson test -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+The test suite includes drivers for the crypto kernel, cipher and hash self-tests, replay database, SRTP in-memory protect/unprotect, and the `rtpw` sample application. A successful run on all platforms confirms the build is correctly configured.
+
+### Available test drivers
+
+| Driver | What it tests |
+|--------|--------------|
+| `srtp_driver` | SRTP in-memory protect and unprotect (no network) |
+| `kernel_driver` | Crypto kernel: ciphers, auth functions, RNG |
+| `cipher_driver` | Individual cipher implementations |
+| `auth_driver` | Hash and authentication functions |
+| `rdbx_driver` | Extended replay database |
+| `replay_driver` | Replay protection window |
+| `roc_driver` | Extended sequence number / rollover counter |
+
+<Warning>
+Always run the test suite when porting libSRTP to a new platform or after changing the crypto backend. The `cipher_type_self_test()` and `auth_type_self_test()` functions within the drivers verify the correctness of the cryptographic primitives on your target hardware and compiler.
+</Warning>

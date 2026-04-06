@@ -1,0 +1,387 @@
+---
+title: 'AES counter mode policies'
+description: 'Crypto policy setup functions for AES-CM (ICM) cipher suites, including AES-128, AES-192, AES-256, null-cipher, and profile-based initialization.'
+keywords: ['srtp', 'crypto policy', 'AES-CM', 'AES-ICM', 'AES-128', 'AES-192', 'AES-256', 'HMAC-SHA1', 'cipher suite']
+---
+
+AES Counter Mode (AES-CM, also called AES-ICM) is the mandatory-to-implement SRTP cipher defined in [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711). Each function below sets all fields of an `srtp_crypto_policy_t` struct in a single call, so you do not need to fill in cipher and authentication IDs by hand.
+
+## Policy comparison
+
+| Function | Key size | Key + salt (total) | Auth tag | Security services |
+|---|---|---|---|---|
+| `srtp_crypto_policy_set_rtp_default` | 128-bit | 30 bytes | 80-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_rtcp_default` | 128-bit | 30 bytes | 80-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32` | 128-bit | 30 bytes | 32-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_128_null_auth` | 128-bit | 30 bytes | none | Confidentiality only |
+| `srtp_crypto_policy_set_aes_cm_192_hmac_sha1_80` | 192-bit | 38 bytes | 80-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_192_hmac_sha1_32` | 192-bit | 38 bytes | 32-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_192_null_auth` | 192-bit | 38 bytes | none | Confidentiality only |
+| `srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80` | 256-bit | 46 bytes | 80-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_256_hmac_sha1_32` | 256-bit | 46 bytes | 32-bit HMAC-SHA1 | Confidentiality + authentication |
+| `srtp_crypto_policy_set_aes_cm_256_null_auth` | 256-bit | 46 bytes | none | Confidentiality only |
+| `srtp_crypto_policy_set_null_cipher_hmac_sha1_80` | n/a | 14 bytes (salt only) | 80-bit HMAC-SHA1 | Authentication only |
+| `srtp_crypto_policy_set_null_cipher_hmac_null` | n/a | none | none | None |
+
+Key + salt totals use `SRTP_AES_ICM_*_KEY_LEN_WSALT`, where the salt is always 14 bytes (`SRTP_SALT_LEN`).
+
+---
+
+## Default policies
+
+### srtp_crypto_policy_set_rtp_default()
+
+```c
+void srtp_crypto_policy_set_rtp_default(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to the SRTP mandatory-to-implement cipher suite for RTP: **AES-128 Counter Mode** encryption with **HMAC-SHA1-80** authentication. This is the correct starting point for most applications.
+
+`srtp_crypto_policy_set_aes_cm_128_hmac_sha1_80()` is a preprocessor macro that calls this function. Both names refer to the same cipher suite; the macro form follows the RFC 4568 naming convention.
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_rtcp_default()
+
+```c
+void srtp_crypto_policy_set_rtcp_default(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to the SRTP default policy for RTCP: **AES-128 Counter Mode** with **HMAC-SHA1-80**. Use this alongside `srtp_crypto_policy_set_rtp_default()` when constructing a complete `srtp_policy_t`.
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## AES-128 counter mode variants
+
+### srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32()
+
+```c
+void srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-128-CM with a **32-bit HMAC-SHA1** authentication tag (RFC 4568 `AES_CM_128_HMAC_SHA1_32`). The shorter tag reduces overhead but provides weaker authentication.
+
+<Warning>
+  RFC 3711 §7.5 considers a 32-bit authentication tag adequate **only** for audio and video media that use a stateless playback function. Do not use this policy for SRTCP; use `srtp_crypto_policy_set_rtcp_default()` instead.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_aes_cm_128_null_auth()
+
+```c
+void srtp_crypto_policy_set_aes_cm_128_null_auth(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-128-CM with **no authentication**. Packets are encrypted but their integrity is not verified.
+
+<Warning>
+  This policy is **NOT RECOMMENDED** for SRTP unless there is no alternative, and it is **NOT RECOMMENDED at all** for SRTCP. Without authentication, an attacker can tamper with packet payloads undetected. See RFC 3711 §7.5.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## AES-192 counter mode variants
+
+<Note>
+  AES-192 is **not natively supported** by libSRTP's built-in crypto. These functions require a third-party cryptographic backend: **OpenSSL**, **NSS**, or **mbedTLS**. Build libSRTP with the corresponding `ENABLE_OPENSSL`, `ENABLE_NSS`, or `ENABLE_MBEDTLS` CMake option.
+</Note>
+
+### srtp_crypto_policy_set_aes_cm_192_hmac_sha1_80()
+
+```c
+void srtp_crypto_policy_set_aes_cm_192_hmac_sha1_80(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-192-CM with **HMAC-SHA1-80** (RFC 6188 `AES_CM_192_HMAC_SHA1_80`). Master key + salt is 38 bytes (`SRTP_AES_ICM_192_KEY_LEN_WSALT`).
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_aes_cm_192_hmac_sha1_32()
+
+```c
+void srtp_crypto_policy_set_aes_cm_192_hmac_sha1_32(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-192-CM with a **32-bit HMAC-SHA1** tag (RFC 6188 `AES_CM_192_HMAC_SHA1_32`).
+
+<Warning>
+  Same 32-bit tag restrictions apply as for the AES-128 variant. Do not use for SRTCP.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_aes_cm_192_null_auth()
+
+```c
+void srtp_crypto_policy_set_aes_cm_192_null_auth(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-192-CM with **no authentication**. Encryption only.
+
+<Warning>
+  NOT RECOMMENDED for SRTP unless unavoidable; NOT RECOMMENDED at all for SRTCP. See RFC 3711 §7.5.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## AES-256 counter mode variants
+
+### srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80()
+
+```c
+void srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-256-CM with **HMAC-SHA1-80** (RFC 6188 `AES_CM_256_HMAC_SHA1_80`). Master key + salt is 46 bytes (`SRTP_AES_ICM_256_KEY_LEN_WSALT`).
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_aes_cm_256_hmac_sha1_32()
+
+```c
+void srtp_crypto_policy_set_aes_cm_256_hmac_sha1_32(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-256-CM with a **32-bit HMAC-SHA1** tag (RFC 6188 `AES_CM_256_HMAC_SHA1_32`).
+
+<Warning>
+  Do not use for SRTCP. The 32-bit tag provides insufficient authentication strength for control traffic.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_aes_cm_256_null_auth()
+
+```c
+void srtp_crypto_policy_set_aes_cm_256_null_auth(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to AES-256-CM with **no authentication**. Encryption only.
+
+<Warning>
+  NOT RECOMMENDED for SRTP unless unavoidable; NOT RECOMMENDED at all for SRTCP. See RFC 3711 §7.5.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## Null cipher policies
+
+### srtp_crypto_policy_set_null_cipher_hmac_sha1_80()
+
+```c
+void srtp_crypto_policy_set_null_cipher_hmac_sha1_80(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to **no encryption** with HMAC-SHA1-80 authentication. Packet payloads are sent in the clear but are authenticated.
+
+<Warning>
+  This policy provides integrity but no confidentiality. Only use it when encryption is intentionally foregone (e.g., in a trusted network where packet inspection tools must see plaintext).
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+### srtp_crypto_policy_set_null_cipher_hmac_null()
+
+```c
+void srtp_crypto_policy_set_null_cipher_hmac_null(srtp_crypto_policy_t *p);
+```
+
+Sets `*p` to **no encryption and no authentication**. This policy passes packets through completely unprotected.
+
+<Warning>
+  This policy provides **no security whatsoever**. Use it only for testing and troubleshooting. Never deploy it in production.
+</Warning>
+
+<ParamField path="p" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+---
+
+## Profile-based initialization
+
+These functions derive crypto policies and key-length constants from the `srtp_profile_t` enumeration. They are useful when key material comes from a DTLS-SRTP or MIKEY negotiation that delivers a profile identifier.
+
+### srtp_profile_t
+
+```c
+typedef enum {
+    srtp_profile_reserved        = 0,
+    srtp_profile_aes128_cm_sha1_80 = 1,
+    srtp_profile_aes128_cm_sha1_32 = 2,
+    srtp_profile_null_sha1_80    = 5,
+    srtp_profile_null_sha1_32    = 6,
+    srtp_profile_aead_aes_128_gcm = 7,
+    srtp_profile_aead_aes_256_gcm = 8,
+} srtp_profile_t;
+```
+
+### srtp_crypto_policy_set_from_profile_for_rtp()
+
+```c
+srtp_err_status_t srtp_crypto_policy_set_from_profile_for_rtp(
+    srtp_crypto_policy_t *policy,
+    srtp_profile_t profile);
+```
+
+Sets `*policy` to the RTP crypto parameters corresponding to `profile`.
+
+<ParamField path="policy" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+<ParamField path="profile" type="srtp_profile_t" required>
+  The SRTP profile identifier received from key-agreement signaling.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  Policy was set successfully.
+</ResponseField>
+<ResponseField name="srtp_err_status_bad_param" type="2">
+  The given profile is not supported.
+</ResponseField>
+
+### srtp_crypto_policy_set_from_profile_for_rtcp()
+
+```c
+srtp_err_status_t srtp_crypto_policy_set_from_profile_for_rtcp(
+    srtp_crypto_policy_t *policy,
+    srtp_profile_t profile);
+```
+
+Sets `*policy` to the RTCP crypto parameters corresponding to `profile`.
+
+<ParamField path="policy" type="srtp_crypto_policy_t *" required>
+  Pointer to the policy struct to initialize.
+</ParamField>
+
+<ParamField path="profile" type="srtp_profile_t" required>
+  The SRTP profile identifier.
+</ParamField>
+
+<ResponseField name="srtp_err_status_ok" type="0">
+  Policy was set successfully.
+</ResponseField>
+<ResponseField name="srtp_err_status_bad_param" type="2">
+  The given profile is not supported.
+</ResponseField>
+
+### srtp_profile_get_master_key_length()
+
+```c
+size_t srtp_profile_get_master_key_length(srtp_profile_t profile);
+```
+
+Returns the number of bytes in the master key for `profile` (excluding the salt).
+
+### srtp_profile_get_master_salt_length()
+
+```c
+size_t srtp_profile_get_master_salt_length(srtp_profile_t profile);
+```
+
+Returns the number of bytes in the master salt for `profile`.
+
+### srtp_append_salt_to_key()
+
+```c
+void srtp_append_salt_to_key(uint8_t *key,
+                             size_t bytes_in_key,
+                             uint8_t *salt,
+                             size_t bytes_in_salt);
+```
+
+Copies `salt` immediately after `key` in memory to produce the concatenated key+salt buffer that `srtp_policy_t.key` expects.
+
+<Warning>
+  The buffer at `key` must have room for at least `bytes_in_key + bytes_in_salt` bytes. Writing beyond the allocation causes undefined behavior.
+</Warning>
+
+<ParamField path="key" type="uint8_t *" required>
+  Pointer to the start of the master key buffer. The salt will be appended starting at `key + bytes_in_key`.
+</ParamField>
+
+<ParamField path="bytes_in_key" type="size_t" required>
+  Length of the master key in bytes.
+</ParamField>
+
+<ParamField path="salt" type="uint8_t *" required>
+  Pointer to the salt bytes to append.
+</ParamField>
+
+<ParamField path="bytes_in_salt" type="size_t" required>
+  Length of the salt in bytes.
+</ParamField>
+
+### Profile-based setup example
+
+```c
+#include <srtp3/srtp.h>
+#include <stdlib.h>
+#include <string.h>
+
+srtp_err_status_t create_session_from_profile(srtp_t *session,
+                                              srtp_profile_t profile,
+                                              const uint8_t *raw_key,
+                                              const uint8_t *raw_salt)
+{
+    srtp_err_status_t status;
+    srtp_policy_t policy;
+    memset(&policy, 0, sizeof(policy));
+
+    /* Derive crypto policies directly from the profile identifier. */
+    status = srtp_crypto_policy_set_from_profile_for_rtp(&policy.rtp, profile);
+    if (status != srtp_err_status_ok) return status;
+
+    status = srtp_crypto_policy_set_from_profile_for_rtcp(&policy.rtcp, profile);
+    if (status != srtp_err_status_ok) return status;
+
+    /* Allocate a buffer large enough for key || salt. */
+    size_t key_len  = srtp_profile_get_master_key_length(profile);
+    size_t salt_len = srtp_profile_get_master_salt_length(profile);
+    uint8_t *keybuf = malloc(key_len + salt_len);
+    if (!keybuf) return srtp_err_status_alloc_fail;
+
+    memcpy(keybuf, raw_key, key_len);
+    srtp_append_salt_to_key(keybuf, key_len, (uint8_t *)raw_salt, salt_len);
+
+    policy.ssrc.type  = ssrc_any_inbound;
+    policy.key        = keybuf;
+    policy.next       = NULL;
+
+    status = srtp_create(session, &policy);
+    free(keybuf);
+    return status;
+}
+```

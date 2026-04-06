@@ -1,0 +1,273 @@
+---
+title: 'Changelog'
+description: 'Release history for libSRTP, including breaking changes, new features, and bug fixes.'
+---
+
+This page summarizes the release history of libSRTP. For the full list of changes and pull request references, see the [GitHub releases page](https://github.com/cisco/libsrtp/releases) and the `CHANGES` file in the repository root.
+
+---
+
+## Version 3.0.0 (current)
+
+Version 3.0.0 is the current development branch. The project and library name changed from `libsrtp2` / `srtp2` to `libsrtp3` / `srtp3`, and the CMake target is now `libSRTP::srtp3`.
+
+<Warning>
+Version 3.0.0 contains breaking API changes relative to 2.x. The SSRC parameter to `srtp_stream_remove()` changed from network byte order to host byte order, consistent with the rest of the API.
+</Warning>
+
+**Breaking changes**
+
+`srtp_stream_remove()` now takes the SSRC in host byte order. In libSRTP 2.x and earlier, the parameter was in network byte order.
+
+The CMake library target is `srtp3` (alias `libSRTP::srtp3`). Projects that linked against `srtp2` must update their CMake target name.
+
+---
+
+## Version 2.6.0
+
+<AccordionGroup>
+<Accordion title="Build system and code quality">
+
+**#667** — Removed use of pointers to 32-bit values to improve portability and silence compiler warnings.
+
+**#666** — Cleaned up CMake configuration and enabled additional compiler warnings.
+
+**#665** — Started applying `const` to internal function arguments where appropriate.
+
+**#641** — Renamed the `TEST_APPS` CMake option to `LIBSRTP_TEST_APPS` for clarity.
+
+**#640** — CMake: added support for configuring libSRTP as a CMake subproject.
+
+</Accordion>
+<Accordion title="New features">
+
+**#507** — Added x86 SIMD optimizations to crypto datatypes for improved performance on compatible hardware.
+
+**#660** — Meson build: implemented Mbedtls support.
+
+</Accordion>
+<Accordion title="Bug fixes">
+
+**#662** — Various fixes to the `srtp_driver` test application.
+
+**#649** — IV length is constant; reduced redundant initialization to once per cipher context.
+
+**#643** — Added a missing `typedef` for the stream list context type.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Version 2.5.0
+
+<AccordionGroup>
+<Accordion title="New features and improvements">
+
+**#636** — Made the Mbedtls HMAC implementation less restrictive, aligning it with RFC and library capabilities.
+
+**#612** — Added the ability to override the stream list implementation.
+
+**#611** — Created a CMake alias `libSRTP::srtp2` for the library target.
+
+**#573** — Exported CMake targets, enabling `find_package(libSRTP)` in downstream projects.
+
+**#602** — Added OpenSSL 3 support via the EVP MAC API.
+
+**#628** — Added an Android build to the CI pipeline.
+
+**#616** — Added CIFuzz GitHub Actions workflow for continuous fuzzing.
+
+</Accordion>
+<Accordion title="Bug fixes">
+
+**#629** — Updated the minimum required OpenSSL version to 1.1.0.
+
+**#593** — Removed legacy OpenSSL compatibility code to fix LibreSSL builds.
+
+**#591** — Replaced deprecated `EVP_CIPHER_CTX_cleanup()` call for OpenSSL 1.1.0 compatibility.
+
+**#589** — Corrected null cipher key sizes and added defensive checks.
+
+**#570** — Fixed the installed include directory to point to `include` instead of `include/srtp2`.
+
+**#561** — Added SSRC and ROC support to the `rtp_decoder` test application.
+
+**#559** — Used a full-length key even when the null cipher is selected.
+
+**#558** — Fixed the `set_roc` functionality when using GCM ciphers.
+
+**#551** — Fixed AES-ICM key usage limit: now counts 128-byte blocks instead of bytes, matching the RFC 3711 limit correctly.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Version 2.4.0
+
+<AccordionGroup>
+<Accordion title="Breaking changes">
+
+**#529** — Removed EKT (Encrypted Key Transport) source files. The EKT draft was never completed and the implementation was unfinished. Applications that referenced EKT APIs must remove those references.
+
+</Accordion>
+<Accordion title="New features">
+
+**#512** — Added Mbedtls as a supported crypto backend (alternative to OpenSSL, NSS, and WolfSSL).
+
+**#495** — Added support for the Meson build system as an alternative to CMake and autotools.
+
+**#503** — Added support for Apple Silicon (arm64) builds.
+
+</Accordion>
+<Accordion title="Bug fixes">
+
+**#546** — Improved the OpenSSL KDF check.
+
+**#524** — Added support for running against NSS >= 3.52.
+
+**#514** — Fixed a GCC 11 warning by explicitly defining an output length.
+
+**#502** — Removed legacy Visual Studio build files (replaced by CMake).
+
+**#500** — Fixed a buffer overflow (issue #499).
+
+**#498** — Added additional error checks throughout the library.
+
+**#491** — Fixed two-byte RTP header extension encryption.
+
+**#478** — Updated CMake to install `crypto_types.h` instead of the deprecated `cipher_types.h`.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Version 2.3.0
+
+<AccordionGroup>
+<Accordion title="New features">
+
+**Fuzzing** — Added a libFuzzer-based fuzzer integrated with Google oss-fuzz for continuous security testing.
+
+**CMake** — Added CMake as a first-class build system, primarily to replace the legacy Visual Studio project files. Supports all major platforms.
+
+**NSS crypto backend** — Added NSS (Mozilla Network Security Services) as a supported crypto backend, usable as an alternative to OpenSSL.
+
+</Accordion>
+<Accordion title="Other changes">
+
+**PR #474** — Added a flag to disable the pcap dependency when building test applications.
+
+**PR #472** — Added CI builds for iOS and Android.
+
+**PR #463** — Fixed a problem in `srtp_aes_icm_openssl_encrypt`.
+
+**PR #444** — Extended `rtp_decoder` to support RTCP and multiplexed SSRCs.
+
+**PR #421** — Fixed GCM IV logging.
+
+**PR #415** — Fixed unaligned trailer access.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Version 2.2.0
+
+<AccordionGroup>
+<Accordion title="New features">
+
+**Code formatting** — All code was reformatted for consistency. A `.clang-format` file and a `format.sh` script were added. Automated format checking was added to CI.
+
+</Accordion>
+<Accordion title="Bug fixes">
+
+**PR #409** — Fixed compatibility with LibreSSL.
+
+**PR #406** — Fixed `srtp_unprotect()` when the packet length is less than `2 * mki_size + tag_len`.
+
+**PR #405** — Prevented a potential double-free.
+
+**PR #403** — Set GCM IV directly with `EVP_CipherInit_ex`.
+
+**PR #401** — Fixed a memory access issue in `srtp_get_session_keys()`.
+
+**PR #398** — Fixed memory access errors when invalid profiles were used.
+
+**PR #391** — Return NULL when allocating memory of size zero.
+
+**PR #390** — Validated that bitvectors of length zero are rejected.
+
+**PR #365** — Replaced direct calls to `free()` with `srtp_crypto_free()`.
+
+**PR #364** — Added Valgrind to CI and fixed memory leaks in tests.
+
+**PR #354** — Fixed a potential leak if cloning a stream fails.
+
+**PR #340** — Fixed a potential leak in `srtp_add_stream()`.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Version 2.1.0
+
+<Warning>
+Version 2.1.0 contains compatibility breaks for RTCP streams using AES-256-ICM with OpenSSL, RTCP streams using AES-GCM (little-endian), and header extension encryption with AES-GCM. These were bug fixes for incorrect behavior.
+</Warning>
+
+<AccordionGroup>
+<Accordion title="Breaking changes (compatibility)">
+
+**PR #253** — Fixed an incorrect IV formation for AES-256 ICM when used with RTCP and OpenSSL. Breaks compatibility with libSRTP 1.5 and 2.0 for RTCP streams using AES-256-ICM with OpenSSL.
+
+**PR #259** — Fixed the AES-GCM IV construction on little-endian machines. Breaks compatibility with libSRTP 1.5 and 2.0 for RTCP streams using AES-GCM.
+
+**PR #287** — Fixed an out-of-bounds read in key generation for encrypted header extensions with GCM ciphers by padding the GCM salt. Breaks compatibility with libSRTP 2.0 when using header extension encryption with AES-GCM.
+
+</Accordion>
+<Accordion title="New features">
+
+**PR #224** — Added MKI (Master Key Identifier) support with up to 4 keys per session.
+
+**PR #289** — Added `srtp_stream_set_roc()` and `srtp_stream_get_roc()` to get and set the Roll-Over Counter (ROC).
+
+**PR #241, #261** — Improved logging API: ability to receive log messages from libSRTP, enable logging to stdout or a file, and control individual debug modules.
+
+**PR #234** — Changed `srtp_event_data_t` to report the SSRC instead of the opaque `srtp_stream_t` pointer, making the event callback framework useful in practice.
+
+**PR #204** — OpenSSL performance improvements: key expansion now occurs once per key instead of once per packet.
+
+**PR #209** — Restored AES-192 support under BoringSSL.
+
+</Accordion>
+<Accordion title="Bug fixes">
+
+**PR #304** — Fixed SRTP and SRTCP packet processing on big-endian machines.
+
+**PR #192** — Replaced `octet_string_is_eq` with a constant-time implementation to prevent timing side-channels.
+
+**PR #294** — Fixed incorrect result of `rdb_increment` on overflow.
+
+**PR #182** — Added a length check before reading packet data.
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Earlier versions
+
+Versions prior to 2.1.0 are not tracked in the `CHANGES` file in the same structured way. For historical releases and their tags, see the [GitHub releases page](https://github.com/cisco/libsrtp/releases).
+
+Key milestones:
+
+**2.0.0** — Major rewrite introducing the `srtp_` prefix on all public symbols, breaking compatibility with the 1.x API.
+
+**1.6.0** — Final 1.x release before the 2.0 rewrite.
+
+**1.5.x** — Long-running stable series used by WebRTC implementations.

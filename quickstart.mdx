@@ -1,80 +1,317 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Build libSRTP and encrypt your first SRTP packet in minutes."
 ---
 
-## Get started in three steps
+This guide walks you through building libSRTP, linking against it, and writing a minimal C program that encrypts and decrypts an RTP packet using SRTP.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+You need:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- A C99-capable compiler (GCC, Clang, or MSVC)
+- One of: Autotools + Make, CMake, or Meson
+- (Recommended) OpenSSL development headers for full cipher support
 
-### Step 2: Deploy your changes
+<Tabs>
+  <Tab title="Debian / Ubuntu">
+    ```bash
+    sudo apt-get install build-essential libssl-dev
+    ```
+  </Tab>
+  <Tab title="macOS (Homebrew)">
+    ```bash
+    brew install openssl
+    ```
+  </Tab>
+  <Tab title="Fedora / RHEL">
+    ```bash
+    sudo dnf install gcc make openssl-devel
+    ```
+  </Tab>
+</Tabs>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Step 1: Get the source
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+Download the latest release from [github.com/cisco/libsrtp/releases](https://github.com/cisco/libsrtp/releases) and extract it:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+tar xzf libsrtp-3.0.0.tar.gz
+cd libsrtp-3.0.0
+```
 
-### Step 3: Go live
+## Step 2: Build and install
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<Tabs>
+  <Tab title="Autotools">
+    ```bash
+    ./configure --with-crypto-library=openssl
+    make
+    sudo make install
+    ```
+  </Tab>
+  <Tab title="CMake">
+    ```bash
+    mkdir build && cd build
+    cmake .. -DCRYPTO_LIBRARY=openssl
+    make
+    sudo make install
+    ```
+  </Tab>
+  <Tab title="Meson">
+    ```bash
+    meson setup builddir -Dcrypto-library=openssl
+    meson compile -C builddir
+    sudo meson install -C builddir
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+Omit the crypto library option to build with the built-in engine. The built-in engine supports AES-128 and AES-256 in counter mode only — no AES-GCM. For production use, always build with an external backend.
+</Tip>
+
+## Step 3: Write a minimal SRTP program
+
+The example below shows the complete lifecycle: initialise the library, create a session with a policy, protect a packet, unprotect it, and clean up.
+
+```c minimal_srtp.c
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "srtp.h"
+
+/*
+ * A minimal demonstration of libSRTP.
+ *
+ * This program creates an SRTP session, encrypts a synthetic RTP packet,
+ * then decrypts it and verifies the result.
+ *
+ * SRTP_MASTER_KEY_LEN is 30 bytes: 16-byte key + 14-byte salt (AES-128-ICM).
+ */
+
+/* Minimal 12-byte RTP header (RFC 3550 §5.1) followed by a short payload. */
+static const uint8_t rtp_packet[] = {
+    /* V=2, P=0, X=0, CC=0, M=0, PT=0, seq=0x0001 */
+    0x80, 0x00, 0x00, 0x01,
+    /* timestamp = 0 */
+    0x00, 0x00, 0x00, 0x00,
+    /* SSRC = 0x12345678 */
+    0x12, 0x34, 0x56, 0x78,
+    /* payload: "Hello, SRTP!" */
+    'H', 'e', 'l', 'l', 'o', ',', ' ', 'S', 'R', 'T', 'P', '!'
+};
+
+int main(void)
+{
+    srtp_err_status_t status;
+    srtp_t            session;
+    srtp_policy_t     policy;
+
+    /* 30-byte master key: 16-byte AES key followed by 14-byte salt. */
+    uint8_t key[SRTP_MASTER_KEY_LEN] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,  /* key  */
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d                /* salt */
+    };
+
+    /* ------------------------------------------------------------------ */
+    /* 1. Initialise the library.  Must be called before anything else.    */
+    /* ------------------------------------------------------------------ */
+    status = srtp_init();
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_init() failed: %d\n", status);
+        return 1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 2. Build a policy.                                                  */
+    /*                                                                     */
+    /*    srtp_crypto_policy_set_rtp_default() configures AES-128-ICM     */
+    /*    with HMAC-SHA1-80 for RTP — the mandatory default from RFC 3711. */
+    /*    srtp_crypto_policy_set_rtcp_default() does the same for RTCP.   */
+    /* ------------------------------------------------------------------ */
+    memset(&policy, 0, sizeof(srtp_policy_t));
+
+    srtp_crypto_policy_set_rtp_default(&policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&policy.rtcp);
+
+    /* Match any outbound stream (wildcard SSRC). */
+    policy.ssrc.type  = ssrc_any_outbound;
+    policy.ssrc.value = 0;
+
+    policy.key  = key;
+    policy.next = NULL;
+
+    /* ------------------------------------------------------------------ */
+    /* 3. Create the SRTP session.                                         */
+    /* ------------------------------------------------------------------ */
+    status = srtp_create(&session, &policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_create() failed: %d\n", status);
+        srtp_shutdown();
+        return 1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 4. Protect (encrypt + authenticate) an RTP packet.                 */
+    /*                                                                     */
+    /*    srtp_protect() writes the SRTP packet into a separate buffer.   */
+    /*    The output buffer must be at least rtp_len + SRTP_MAX_TRAILER_LEN*/
+    /*    bytes.                                                           */
+    /* ------------------------------------------------------------------ */
+    uint8_t  srtp_buf[sizeof(rtp_packet) + SRTP_MAX_TRAILER_LEN];
+    size_t   srtp_len = sizeof(srtp_buf);
+
+    status = srtp_protect(session,
+                          rtp_packet, sizeof(rtp_packet),
+                          srtp_buf,   &srtp_len,
+                          0 /* mki_index, ignored when use_mki is false */);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_protect() failed: %d\n", status);
+        srtp_dealloc(session);
+        srtp_shutdown();
+        return 1;
+    }
+
+    printf("Protected: %zu bytes -> %zu bytes (added %zu bytes of trailer)\n",
+           sizeof(rtp_packet), srtp_len, srtp_len - sizeof(rtp_packet));
+
+    /* ------------------------------------------------------------------ */
+    /* 5. Create a separate inbound session to unprotect the packet.      */
+    /*                                                                     */
+    /*    In a real application the sender and receiver are separate       */
+    /*    processes; here we create a second session to simulate the       */
+    /*    receiver side.                                                   */
+    /* ------------------------------------------------------------------ */
+    srtp_t         rx_session;
+    srtp_policy_t  rx_policy;
+
+    memset(&rx_policy, 0, sizeof(srtp_policy_t));
+    srtp_crypto_policy_set_rtp_default(&rx_policy.rtp);
+    srtp_crypto_policy_set_rtcp_default(&rx_policy.rtcp);
+
+    rx_policy.ssrc.type  = ssrc_any_inbound;
+    rx_policy.ssrc.value = 0;
+    rx_policy.key        = key;   /* same master key */
+    rx_policy.next       = NULL;
+
+    status = srtp_create(&rx_session, &rx_policy);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_create() for rx failed: %d\n", status);
+        srtp_dealloc(session);
+        srtp_shutdown();
+        return 1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 6. Unprotect (verify + decrypt) the SRTP packet.                   */
+    /* ------------------------------------------------------------------ */
+    uint8_t  rtp_out[sizeof(srtp_buf)];
+    size_t   rtp_out_len = sizeof(rtp_out);
+
+    status = srtp_unprotect(rx_session,
+                            srtp_buf, srtp_len,
+                            rtp_out,  &rtp_out_len);
+    if (status != srtp_err_status_ok) {
+        fprintf(stderr, "srtp_unprotect() failed: %d\n", status);
+        srtp_dealloc(rx_session);
+        srtp_dealloc(session);
+        srtp_shutdown();
+        return 1;
+    }
+
+    printf("Unprotected: %zu bytes, payload matches: %s\n",
+           rtp_out_len,
+           memcmp(rtp_out, rtp_packet, sizeof(rtp_packet)) == 0 ? "yes" : "no");
+
+    /* ------------------------------------------------------------------ */
+    /* 7. Clean up.                                                        */
+    /* ------------------------------------------------------------------ */
+    srtp_dealloc(rx_session);
+    srtp_dealloc(session);
+    srtp_shutdown();
+
+    return 0;
+}
+```
+
+### Compiling the example
+
+```bash
+gcc -o minimal_srtp minimal_srtp.c -lsrtp3 -lssl -lcrypto
+./minimal_srtp
+```
+
+Expected output:
+
+```
+Protected: 24 bytes -> 34 bytes (added 10 bytes of trailer)
+Unprotected: 24 bytes, payload matches: yes
+```
+
+<Note>
+The library is named `srtp3` (not `srtp`). Link with `-lsrtp3`. The exact linker flags for your crypto backend may vary; on macOS with a Homebrew OpenSSL installation you may need `-L$(brew --prefix openssl)/lib`.
+</Note>
+
+## Understanding the lifecycle
+
+Every libSRTP program follows the same pattern:
+
+<Steps>
+  <Step title="srtp_init()">
+    Call once at program startup before any other libSRTP function. Initialises the internal crypto kernel.
+  </Step>
+  <Step title="Build an srtp_policy_t">
+    Populate an `srtp_policy_t` struct describing the cipher, authentication function, master key, and SSRC. Use `srtp_crypto_policy_set_rtp_default()` and `srtp_crypto_policy_set_rtcp_default()` to initialise the crypto sub-policies to the RFC 3711 defaults.
+  </Step>
+  <Step title="srtp_create()">
+    Allocate and initialise an SRTP session context from the policy. Returns an `srtp_t` handle.
+  </Step>
+  <Step title="srtp_protect() / srtp_unprotect()">
+    Call `srtp_protect()` on each outbound RTP packet and `srtp_unprotect()` on each inbound SRTP packet. Separate functions exist for RTCP: `srtp_protect_rtcp()` and `srtp_unprotect_rtcp()`.
+  </Step>
+  <Step title="srtp_dealloc() and srtp_shutdown()">
+    Free each session with `srtp_dealloc()` and call `srtp_shutdown()` once when the program exits.
+  </Step>
+</Steps>
+
+## Key sizes and constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SRTP_MASTER_KEY_LEN` | 30 | Default master key length (16-byte key + 14-byte salt) |
+| `SRTP_MAX_KEY_LEN` | 64 | Maximum supported master key length |
+| `SRTP_MAX_TRAILER_LEN` | 144 | Maximum bytes `srtp_protect()` can append |
+| `SRTP_AES_128_KEY_LEN` | 16 | AES-128 key length in bytes |
+| `SRTP_AES_256_KEY_LEN` | 32 | AES-256 key length in bytes |
+| `SRTP_SALT_LEN` | 14 | Salt length for AES-ICM |
+| `SRTP_AEAD_SALT_LEN` | 12 | Salt length for AES-GCM |
+
+## Error handling
+
+All libSRTP functions return an `srtp_err_status_t`. A return value of `srtp_err_status_ok` (0) means success. Always check return values in production code.
+
+Common error codes you will encounter:
+
+| Error | Meaning |
+|-------|---------|
+| `srtp_err_status_ok` | Success |
+| `srtp_err_status_auth_fail` | Authentication tag verification failed |
+| `srtp_err_status_replay_fail` | Packet has already been processed (replay detected) |
+| `srtp_err_status_replay_old` | Packet index is too far in the past |
+| `srtp_err_status_buffer_small` | Output buffer is too small |
+| `srtp_err_status_no_ctx` | No stream context matched the packet's SSRC |
+| `srtp_err_status_key_expired` | Stream key has reached its usage limit |
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Build options" icon="wrench" href="/building">
+    Explore all build system options, crypto backend flags, and platform-specific notes.
+  </Card>
+  <Card title="Sessions and streams" icon="layers" href="/concepts/sessions-and-streams">
+    Understand the session and stream model and how to manage multiple senders.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

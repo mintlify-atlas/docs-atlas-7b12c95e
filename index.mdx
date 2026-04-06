@@ -1,97 +1,63 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "libSRTP Documentation"
+description: "The open source C library for Secure Real-time Transport Protocol (SRTP) — encrypt and authenticate RTP and RTCP streams."
 ---
 
-## Setting up
+libSRTP is a production-grade C library from Cisco Systems that implements the Secure Real-time Transport Protocol ([RFC 3711](https://tools.ietf.org/html/rfc3711)). It provides confidentiality, message authentication, and replay protection for RTP and RTCP packets used in audio, video, and telephony applications.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get libSRTP integrated and protecting your first RTP stream in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Building libSRTP" icon="hammer" href="/building">
+    Build from source with autotools, CMake, or Meson on any platform.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/sessions-and-streams">
+    Understand sessions, streams, policies, and cryptographic contexts.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/srtp-init">
+    Complete reference for every public function and data type.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What libSRTP does
 
-Everything you need to create world-class documentation.
+libSRTP protects RTP and RTCP traffic by applying encryption and authentication. You call `srtp_protect()` to encrypt an outgoing RTP packet into an SRTP packet, and `srtp_unprotect()` to decrypt and verify an incoming SRTP packet. The same pattern applies to RTCP via `srtp_protect_rtcp()` and `srtp_unprotect_rtcp()`.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Install and build">
+    Clone the repository and build with your preferred build system — autotools, CMake, or Meson. Link against `libsrtp2` (or `libsrtp3`) and include `srtp.h`.
+  </Step>
+  <Step title="Initialize the library">
+    Call `srtp_init()` once at application startup before any other libSRTP function. This sets up the cryptographic kernel.
+  </Step>
+  <Step title="Configure a crypto policy">
+    Create an `srtp_policy_t` struct describing which cipher and authentication algorithm to use, the master key, and which SSRC to protect.
+  </Step>
+  <Step title="Create a session and protect packets">
+    Call `srtp_create()` with your policy to get an `srtp_t` session handle. Then call `srtp_protect()` for each outgoing packet and `srtp_unprotect()` for each incoming packet.
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="RFC 3711 compliant SRTP" icon="shield-check">
+    Full implementation of mandatory SRTP features including AES-128/256 counter mode encryption and HMAC-SHA1 authentication.
+  </Card>
+  <Card title="AES-GCM support" icon="lock">
+    Authenticated encryption with AES-128-GCM and AES-256-GCM per RFC 7714, providing both confidentiality and integrity in a single pass.
+  </Card>
+  <Card title="Multiple crypto backends" icon="gear">
+    Plug in OpenSSL, NSS, or mbedTLS as the crypto engine, or use the built-in software implementation for AES-128 and AES-256.
+  </Card>
+  <Card title="Replay protection" icon="rotate-left">
+    Built-in replay attack detection using a sliding window database, configurable per stream.
+  </Card>
+  <Card title="Master Key Identifier (MKI)" icon="key">
+    Support for multiple master keys per session with MKI-based selection, enabling seamless key rotation.
+  </Card>
+  <Card title="Cross-platform" icon="globe">
+    Tested on Linux, macOS, Windows (MSVC), Solaris, OpenBSD, and Cygwin. Builds with autotools, CMake, and Meson.
+  </Card>
+</CardGroup>

@@ -1,0 +1,133 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "libSRTP",
+  "projectDescription": "An open source C library implementing Secure Real-time Transport Protocol (SRTP) and SRTCP for encrypting and authenticating RTP and RTCP packets.",
+  "theme": "aspen",
+  "primaryColor": "#956fb1",
+  "lightColor": "#3b2c47",
+  "darkColor": "#ffffff",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "building"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/sessions-and-streams",
+              "concepts/crypto-policies",
+              "concepts/key-management"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/protecting-rtp",
+              "guides/protecting-rtcp",
+              "guides/event-handling",
+              "guides/crypto-backends"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/error-codes",
+              "reference/constants",
+              "reference/changelog"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Session Management",
+            "pages": [
+              "api/srtp-init",
+              "api/srtp-create",
+              "api/srtp-dealloc"
+            ]
+          },
+          {
+            "group": "Packet Processing",
+            "pages": [
+              "api/srtp-protect",
+              "api/srtp-unprotect",
+              "api/srtp-protect-rtcp",
+              "api/srtp-unprotect-rtcp"
+            ]
+          },
+          {
+            "group": "Stream Management",
+            "pages": [
+              "api/stream-operations",
+              "api/stream-roc"
+            ]
+          },
+          {
+            "group": "Crypto Policies",
+            "pages": [
+              "api/crypto-policy-aes-cm",
+              "api/crypto-policy-aes-gcm"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "RFC 3711 compliant SRTP implementation for RTP encryption and authentication",
+    "SRTCP support for securing RTP control protocol traffic",
+    "AES-GCM authenticated encryption per RFC 7714",
+    "Multiple cipher backends: OpenSSL, NSS, mbedTLS, or built-in",
+    "AES-128, AES-192, and AES-256 key sizes with ICM and GCM modes",
+    "Master Key Identifier (MKI) support for multi-key sessions",
+    "Replay attack protection with configurable window size",
+    "Event handler callbacks for key expiry and SSRC collision events",
+    "Cross-platform: Linux, macOS, Windows (MSVC/CMake), BSD, Solaris",
+    "Build system support: autotools, CMake, and Meson"
+  ],
+  "publicApiSurface": [
+    "srtp_init()",
+    "srtp_shutdown()",
+    "srtp_create(srtp_t *session, const srtp_policy_t *policy)",
+    "srtp_dealloc(srtp_t s)",
+    "srtp_protect(srtp_t ctx, const uint8_t *rtp, size_t rtp_len, uint8_t *srtp, size_t *srtp_len, size_t mki_index)",
+    "srtp_unprotect(srtp_t ctx, const uint8_t *srtp, size_t srtp_len, uint8_t *rtp, size_t *rtp_len)",
+    "srtp_protect_rtcp(srtp_t ctx, const uint8_t *rtcp, size_t rtcp_len, uint8_t *srtcp, size_t *srtcp_len, size_t mki_index)",
+    "srtp_unprotect_rtcp(srtp_t ctx, const uint8_t *srtcp, size_t srtcp_len, uint8_t *rtcp, size_t *rtcp_len)",
+    "srtp_stream_add(srtp_t session, const srtp_policy_t *policy)",
+    "srtp_stream_remove(srtp_t session, uint32_t ssrc)",
+    "srtp_stream_update(srtp_t session, const srtp_policy_t *policy)",
+    "srtp_update(srtp_t session, const srtp_policy_t *policy)",
+    "srtp_stream_set_roc(srtp_t session, uint32_t ssrc, uint32_t roc)",
+    "srtp_stream_get_roc(srtp_t session, uint32_t ssrc, uint32_t *roc)",
+    "srtp_crypto_policy_set_rtp_default(srtp_crypto_policy_t *p)",
+    "srtp_crypto_policy_set_rtcp_default(srtp_crypto_policy_t *p)",
+    "srtp_crypto_policy_set_aes_cm_128_hmac_sha1_32(srtp_crypto_policy_t *p)",
+    "srtp_crypto_policy_set_aes_cm_256_hmac_sha1_80(srtp_crypto_policy_t *p)",
+    "srtp_crypto_policy_set_aes_gcm_128_16_auth(srtp_crypto_policy_t *p)",
+    "srtp_crypto_policy_set_aes_gcm_256_16_auth(srtp_crypto_policy_t *p)",
+    "srtp_install_event_handler(srtp_event_handler_func_t func)",
+    "srtp_install_log_handler(srtp_log_handler_func_t func, void *data)",
+    "srtp_get_version_string()",
+    "srtp_get_version()",
+    "srtp_set_user_data(srtp_t ctx, void *data)",
+    "srtp_get_user_data(srtp_t ctx)",
+    "srtp_get_protect_trailer_length(srtp_t session, size_t mki_index, size_t *length)",
+    "srtp_get_protect_rtcp_trailer_length(srtp_t session, size_t mki_index, size_t *length)",
+    "srtp_policy_t struct",
+    "srtp_crypto_policy_t struct",
+    "srtp_err_status_t enum",
+    "srtp_profile_t enum"
+  ]
+}
